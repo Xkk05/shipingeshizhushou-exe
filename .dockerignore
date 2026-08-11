@@ -1,0 +1,14 @@
+node_modules
+dist
+dist-web
+dist-electron
+.git
+.playwright-cli
+uploads
+converted
+vite-web.out.log
+vite-web.err.log
+server-proxy.out.log
+server-proxy.err.log
+build-web-full.log
+*.log

@@ -1,0 +1,76 @@
+// 主题色
+$primary-color: #36d1c4;
+$primary-light: #e8f8f6;
+$primary-dark: #2bb5a9;
+
+// 功能卡片颜色
+$card-pink: #fce4ec;
+$card-blue: #e3f2fd;
+$card-yellow: #fff8e1;
+$card-green: #e8f5e9;
+
+// 文字颜色
+$text-primary: #333;
+$text-secondary: #666;
+$text-light: #999;
+
+// 边框
+$border-color: #e0e0e0;
+$border-radius: 8px;
+$border-radius-lg: 12px;
+
+// 阴影
+$shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.08);
+$shadow-md: 0 4px 16px rgba(0, 0, 0, 0.1);
+
+// 全局样式
+:root {
+  --primary-color: #{$primary-color};
+  --primary-light: #{$primary-light};
+}
+
+// 滚动条
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #ccc;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f5f5f5;
+}
+
+// 按钮样式
+.btn-primary {
+  background: $primary-color;
+  color: white;
+  border: none;
+  padding: 10px 24px;
+  border-radius: 20px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.3s;
+
+  &:hover {
+    background: $primary-dark;
+  }
+}
+
+.btn-outline {
+  background: white;
+  color: $primary-color;
+  border: 1px solid $primary-color;
+  padding: 10px 24px;
+  border-radius: 20px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.3s;
+
+  &:hover {
+    background: $primary-light;
+  }
+}

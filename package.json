@@ -1,0 +1,134 @@
+{
+  "name": "kunqiu-video-converter",
+  "private": true,
+  "version": "1.0.1",
+  "description": "视频格式助手",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "electron:dev": "vite --mode electron",
+    "build": "vite build --mode electron && electron-builder",
+    "build:desktop": "vite build --mode electron && electron-builder --config electron-builder.multi-platform.js",
+    "build:mac": "vite build --mode electron && electron-builder --mac zip --config electron-builder.multi-platform.js",
+    "build:web": "vite build --mode web && node scripts/generate-seo-files.mjs",
+    "build:server": "tsc -p tsconfig.server.json",
+    "build:prod": "npm run build:web && npm run build:server",
+    "server": "ts-node server/index.ts",
+    "start": "node dist-server/server/index.js",
+    "preview": "vite preview",
+    "test": "vitest",
+    "test:run": "vitest --run"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/fluent-ffmpeg": "^2.1.28",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^25.5.0",
+    "@types/qrcode": "^1.5.6",
+    "@types/uuid": "^10.0.0",
+    "@vitejs/plugin-vue": "^6.0.3",
+    "archiver": "^7.0.1",
+    "electron": "^39.2.7",
+    "electron-builder": "^26.8.1",
+    "electron-builder-squirrel-windows": "^26.0.12",
+    "jsdom": "^24.0.0",
+    "sass": "^1.97.1",
+    "ts-node": "^10.9.2",
+    "typescript": "~5.9.3",
+    "vite": "^7.2.4",
+    "vite-plugin-electron": "^0.29.0",
+    "vite-plugin-electron-renderer": "^0.14.6",
+    "vitest": "^1.0.4",
+    "vue": "^3.5.26",
+    "vue-tsc": "^2.2.12"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.2",
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@ffmpeg-installer/linux-x64": "^4.1.0",
+    "@ffprobe-installer/ffprobe": "^2.1.2",
+    "@ffprobe-installer/linux-x64": "^5.2.0",
+    "axios": "^1.13.6",
+    "cors": "^2.8.6",
+    "element-plus": "^2.13.0",
+    "express": "^5.2.1",
+    "fluent-ffmpeg": "^2.1.3",
+    "multer": "^2.0.2",
+    "pinia": "^3.0.4",
+    "qrcode": "^1.5.4",
+    "uuid": "^9.0.1",
+    "vue-i18n": "^9.14.4",
+    "vue-router": "^4.6.4"
+  },
+  "build": {
+    "appId": "com.kunqiu.video-converter",
+    "productName": "视频格式助手",
+    "directories": {
+      "output": "release_build_v101_portable_new"
+    },
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/@ffmpeg-installer/**/*",
+      "node_modules/@ffprobe-installer/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "public/app-icon.ico",
+        "to": "app-icon.ico"
+      },
+      {
+        "from": "public/updater.exe",
+        "to": "updater.exe"
+      }
+    ],
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "node_modules/**/*",
+      "public/app-icon.ico"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "public/app-icon.ico",
+      "signAndEditExecutable": true,
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
+      "installerIcon": "public/app-icon.ico",
+      "uninstallerIcon": "public/app-icon.ico",
+      "installerHeaderIcon": "public/app-icon.ico",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "视频格式助手",
+      "artifactName": "${productName} Setup ${version}.${ext}",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true,
+      "menuCategory": "多媒体工具",
+      "displayLanguageSelector": false,
+      "warningsAsErrors": false,
+      "perMachine": false,
+      "guid": "kunqiu-video-converter-1.4.0",
+      "include": "build/installer.nsh"
+    },
+    "portable": {
+      "artifactName": "${productName} Portable ${version}.${ext}"
+    }
+  }
+}
