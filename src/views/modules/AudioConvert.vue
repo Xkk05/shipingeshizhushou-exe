@@ -135,7 +135,7 @@ const defaultAudioSettings = {
 const batchAudioSettings = ref({ ...defaultAudioSettings })
 const bitrateLabel = computed(() => bitrate.value ? bitrate.value.replace('k', 'kbps') : '')
 
-const audioExtensions = ['mp3', 'wav', 'aac', 'flac', 'ogg', 'm4a', 'wma', 'aiff']
+const audioExtensions = ['mp3', 'wav', 'aac', 'flac', 'ogg', 'm4a', 'm4r', 'mp2', 'wma', 'aiff']
 
 onMounted(async () => {
   outputDir.value = await platformService.getDefaultOutputDir()

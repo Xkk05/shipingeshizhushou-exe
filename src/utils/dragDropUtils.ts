@@ -62,7 +62,7 @@ export const VIDEO_EXTENSIONS = ['mp4', 'avi', 'wmv', 'flv', 'mkv', 'mov', 'webm
 /**
  * 音频文件扩展名
  */
-export const AUDIO_EXTENSIONS = ['mp3', 'wav', 'aac', 'flac', 'ogg', 'm4a', 'wma', 'aiff']
+export const AUDIO_EXTENSIONS = ['mp3', 'wav', 'aac', 'flac', 'ogg', 'm4a', 'm4r', 'mp2', 'wma', 'aiff']
 
 /**
  * 所有媒体文件扩展名

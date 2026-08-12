@@ -111,7 +111,7 @@ const reportedOgvSwfSettings: VideoConversionSettings = {
 const staleAudioSettings: AudioConversionSettings = {
   audioCodec: 'ac3',
   audioBitrate: '320',
-  sampleRate: '44100',
+  sampleRate: '24000',
   channels: 'stereo',
 }
 
@@ -406,6 +406,10 @@ describe('real media conversion workflows', () => {
       aiff: 'pcm_s16be',
       mp2: 'mp2',
     }
+    const expectedSampleRates: Record<string, string> = {
+      ogg: '44100',
+      mp2: '44100',
+    }
 
     for (const [format, expectedCodec] of Object.entries(expectedCodecs)) {
       const outputPath = path.join(tempDir, `audio-safe.${format}`)
@@ -413,13 +417,15 @@ describe('real media conversion workflows', () => {
 
       expect(isAudioOutputFormat(format), `${format} should route to audio conversion`).toBe(true)
       expect(plan.audioCodec, `${format} should ignore stale AC3`).not.toBe('ac3')
+      if (format === 'ogg') expect(plan.outputOptions).toEqual(['-q:a', '9'])
+      if (format === 'mp2') expect(plan.audioBitrate).toBe('320k')
 
       await runAudioConversionPlan(inputVideo, outputPath, plan)
 
       const metadata = await probe(outputPath)
       expect(videoStream(metadata), `${format} should not contain a video stream`).toBeUndefined()
       expect(audioStream(metadata)?.codec_name, `${format} should use the expected audio codec`).toBe(expectedCodec)
-      expect(audioStream(metadata)?.sample_rate, `${format} should apply selected sample rate`).toBe('44100')
+      expect(audioStream(metadata)?.sample_rate, `${format} should apply safe sample rate`).toBe(expectedSampleRates[format] || '24000')
       await expectDecodesWithoutErrors(outputPath)
     }
   }, timeoutMs)
