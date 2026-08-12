@@ -51,7 +51,7 @@
       </div>
     </div>
 
-    <SettingsDialog v-model="showSettings" type="video" @confirm="handleSettingsConfirm" />
+    <SettingsDialog v-model="showSettings" type="video" :initial-settings="batchSettings" :initial-format="files[0]?.outputFormat || 'mp4'" @confirm="handleSettingsConfirm" />
     <QRUploadDialog v-model="showQRUpload" @files-uploaded="handleFilesUploaded" />
     <M3U8Dialog v-model="showURLDialog" @download-complete="handleURLDownloaded" />
     <AuthCodeDialog v-model="showAuthDialog" @success="handleAuthSuccess" />
@@ -125,7 +125,7 @@ const outputPathType = ref('default')
 const isDragging = ref(false)
 const isProcessingDrop = ref(false)
 
-const batchSettings = ref({ resolution: 'auto', videoBitrate: 'auto', frameRate: 'auto', audioBitrate: 'auto' })
+const batchSettings = ref({ resolution: 'auto', width: 0, height: 0, videoBitrate: 'auto', frameRate: 'auto', audioBitrate: 'auto' })
 const videoExtensions = ['mp4', 'avi', 'mkv', 'mov', 'flv', 'wmv', 'webm', '3gp', 'ts', 'm2ts']
 
 onMounted(async () => {
@@ -242,12 +242,27 @@ const handleFilesSelected = addFilesToList
 const clearFiles = () => { files.value = [] }
 const deleteFile = (file: any) => { files.value = files.value.filter(f => f.id !== file.id) }
 const openSettings = () => { showSettings.value = true }
+const outputResolutionFromSettings = (settings: any, fallback = '') => {
+  if (settings?.width && settings?.height) return `${settings.width}x${settings.height}`
+  const resolution = String(settings?.resolution || '')
+  if (resolution && resolution !== 'auto' && !resolution.startsWith('custom')) return resolution
+  return fallback
+}
 
 const handleSettingsConfirm = (data: { format: string; settings: any }) => {
+  batchSettings.value = {
+    resolution: data.settings?.resolution || 'auto',
+    width: Number(data.settings?.width || 0),
+    height: Number(data.settings?.height || 0),
+    videoBitrate: data.settings?.videoBitrate || 'auto',
+    frameRate: data.settings?.frameRate || 'auto',
+    audioBitrate: data.settings?.audioBitrate || 'auto',
+  }
   // 更新文件格式并重置已完成文件的状态，允许重新压缩
   files.value.forEach(f => {
     f.outputFormat = data.format.toLowerCase()
     f.outputName = f.name.replace(/\.[^.]+$/, `_compress.${data.format.toLowerCase()}`)
+    f.outputResolution = outputResolutionFromSettings(batchSettings.value, f.resolution)
     if (f.status === 'completed' || f.status === 'error') {
       f.status = 'pending'
       f.progress = 0
@@ -258,7 +273,7 @@ const handleSettingsConfirm = (data: { format: string; settings: any }) => {
 const applyBatchSettings = () => {
   // 应用批量设置并重置已完成文件的状态
   files.value.forEach(f => {
-    if (batchSettings.value.resolution !== 'auto') f.outputResolution = batchSettings.value.resolution
+    f.outputResolution = outputResolutionFromSettings(batchSettings.value, f.resolution)
     if (f.status === 'completed' || f.status === 'error') {
       f.status = 'pending'
       f.progress = 0
@@ -285,7 +300,9 @@ const compressFile = async (file: any, showDialog = true) => {
     try {
       await platformService.convertVideo({
         id: file.id, inputPath: file.path, outputPath: getOutputPath(file), mode: compressMode.value,
-        resolution: batchSettings.value.resolution, videoBitrate: batchSettings.value.videoBitrate,
+        format: file.outputFormat || 'mp4',
+        resolution: batchSettings.value.resolution, width: batchSettings.value.width, height: batchSettings.value.height,
+        videoBitrate: batchSettings.value.videoBitrate,
         frameRate: batchSettings.value.frameRate, audioBitrate: batchSettings.value.audioBitrate,
         type: 'compress-video'
       })
@@ -304,7 +321,9 @@ const compressAll = async () => {
       try {
         await platformService.convertVideo({
           id: file.id, inputPath: file.path, outputPath: getOutputPath(file), mode: compressMode.value,
-          resolution: batchSettings.value.resolution, videoBitrate: batchSettings.value.videoBitrate,
+          format: file.outputFormat || 'mp4',
+          resolution: batchSettings.value.resolution, width: batchSettings.value.width, height: batchSettings.value.height,
+          videoBitrate: batchSettings.value.videoBitrate,
           frameRate: batchSettings.value.frameRate, audioBitrate: batchSettings.value.audioBitrate,
           type: 'compress-video'
         })

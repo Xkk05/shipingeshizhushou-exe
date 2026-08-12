@@ -5,6 +5,13 @@ import * as crypto from 'crypto'
 import { execSync, spawn } from 'child_process'
 import * as os from 'os'
 import { v4 as uuidv4 } from 'uuid'
+import {
+  createVideoConversionPlan,
+  outputExtensionFromPath,
+  outputFormatFromPath,
+  outputSizeFromSettings,
+  type VideoConversionSettings,
+} from './videoConversionProfiles'
 
 // ==================== 机器码生成功能 ====================
 
@@ -187,6 +194,16 @@ function configureFFmpeg() {
   if (ffprobePath) ffmpeg.setFfprobePath(ffprobePath)
   
   ffmpegConfigured = true
+}
+
+const applyCompressionCodecs = (command: ffmpeg.FfmpegCommand, ext: string) => {
+  if (ext === 'webm') return command.videoCodec('libvpx-vp9').audioCodec('libopus')
+  if (ext === 'avi') return command.videoCodec('mpeg4').audioCodec('libmp3lame')
+  if (ext === 'wmv') return command.videoCodec('wmv2').audioCodec('wmav2')
+  if (ext === 'swf') return command.videoCodec('libx264').audioCodec('aac')
+  if (ext === 'mpg' || ext === 'mpeg' || ext === 'vob') return command.videoCodec('mpeg2video').audioCodec('mp2')
+  if (ext === 'ogv') return command.videoCodec('libtheora').audioCodec('libvorbis')
+  return command.videoCodec('libx264').audioCodec('aac')
 }
 
 let mainWindow: BrowserWindow | null = null
@@ -767,17 +784,7 @@ ipcMain.handle('convert-video', async (_, options: {
   inputPath: string
   outputPath: string
   format: string
-  settings?: {
-    videoCodec?: string
-    audioCodec?: string
-    resolution?: string
-    width?: number
-    height?: number
-    frameRate?: string
-    videoBitrate?: string
-    audioBitrate?: string
-    sampleRate?: string
-  }
+  settings?: VideoConversionSettings
 }) => {
   configureFFmpeg()
   const { id, inputPath, outputPath, format, settings } = options
@@ -791,133 +798,23 @@ ipcMain.handle('convert-video', async (_, options: {
   
   return new Promise((resolve, reject) => {
     let command = ffmpeg(inputPath)
-    
-    // 应用设置
-    if (settings) {
-      if (settings.videoCodec && settings.videoCodec !== 'auto') {
-        const codecMap: Record<string, string> = {
-          'h264': 'libx264',
-          'h265': 'libx265',
-          'vp9': 'libvpx-vp9'
-        }
-        command = command.videoCodec(codecMap[settings.videoCodec] || settings.videoCodec)
-      }
-      
-      if (settings.audioCodec && settings.audioCodec !== 'auto') {
-        const audioCodecMap: Record<string, string> = {
-          'aac': 'aac',
-          'mp3': 'libmp3lame'
-        }
-        command = command.audioCodec(audioCodecMap[settings.audioCodec] || settings.audioCodec)
-      }
-      
-      if (settings.width && settings.height) {
-        command = command.size(`${settings.width}x${settings.height}`)
-      } else if (settings.resolution && settings.resolution !== 'auto') {
-        command = command.size(settings.resolution)
-      }
-      
-      if (settings.frameRate && settings.frameRate !== 'auto') {
-        command = command.fps(parseInt(settings.frameRate))
-      }
-      
-      if (settings.videoBitrate && settings.videoBitrate !== 'auto') {
-        command = command.videoBitrate(`${settings.videoBitrate}k`)
-      }
-      
-      if (settings.audioBitrate && settings.audioBitrate !== 'auto') {
-        command = command.audioBitrate(`${settings.audioBitrate}k`)
-      }
-      
-      if (settings.sampleRate && settings.sampleRate !== 'auto') {
-        command = command.audioFrequency(parseInt(settings.sampleRate))
-      }
-    }
+
+    const conversionPlan = createVideoConversionPlan(format, settings)
+    command = command.videoCodec(conversionPlan.videoCodec).audioCodec(conversionPlan.audioCodec)
+
+    if (conversionPlan.outputSize) command = command.size(conversionPlan.outputSize)
+    if (conversionPlan.frameRate) command = command.fps(conversionPlan.frameRate)
+    if (conversionPlan.videoBitrate) command = command.videoBitrate(`${conversionPlan.videoBitrate}k`)
+    if (conversionPlan.audioBitrate) command = command.audioBitrate(`${conversionPlan.audioBitrate}k`)
+    if (conversionPlan.sampleRate) command = command.audioFrequency(conversionPlan.sampleRate)
+    if (conversionPlan.audioChannels) command = command.audioChannels(conversionPlan.audioChannels)
+    if (conversionPlan.outputOptions.length > 0) command = command.outputOptions(conversionPlan.outputOptions)
     
     // 存储任务以便取消
     convertTasks.set(id, command)
     
-    // 格式映射 - 某些格式需要特殊处理
-    const formatMap: Record<string, string> = {
-      'wmv': 'asf',
-      '3gp': '3gp',
-      'f4v': 'flv',
-      'flv': 'flv',
-      'swf': 'flv',
-      'ogv': 'ogg',
-      'vob': 'vob',
-      'mpg': 'mpeg',
-      'wtv': 'wtv',
-      'ts': 'mpegts',
-      'm2ts': 'mpegts',
-      'mts': 'mpegts',
-      'm2t': 'mpegts',
-      'mkv': 'matroska',
-      'm4v': 'mp4'
-    }
-    
-    const outputFormat = formatMap[format.toLowerCase()] || format.toLowerCase()
-    const fmt = format.toLowerCase()
-    
-    // 为特定格式设置兼容的编码器（仅当用户未指定时）
-    const needsVideoCodec = !settings?.videoCodec || settings.videoCodec === 'auto'
-    const needsAudioCodec = !settings?.audioCodec || settings.audioCodec === 'auto'
-    
-    if (fmt === 'avi') {
-      // AVI: MPEG-4 + MP3
-      if (needsVideoCodec) command = command.videoCodec('mpeg4')
-      if (needsAudioCodec) command = command.audioCodec('libmp3lame')
-    } else if (fmt === 'wmv') {
-      // WMV: WMV2 + WMA
-      if (needsVideoCodec) command = command.videoCodec('wmv2')
-      if (needsAudioCodec) command = command.audioCodec('wmav2')
-    } else if (fmt === 'flv' || fmt === 'f4v' || fmt === 'swf') {
-      // FLV/F4V/SWF: H.264 + AAC (更好的兼容性)
-      if (needsVideoCodec) command = command.videoCodec('libx264')
-      if (needsAudioCodec) command = command.audioCodec('aac')
-      // 添加 FLV 特定参数
-      command = command.outputOptions(['-ar', '44100', '-ac', '2'])
-    } else if (fmt === 'mp4' || fmt === 'm4v') {
-      // MP4: H.264 + AAC
-      if (needsVideoCodec) command = command.videoCodec('libx264')
-      if (needsAudioCodec) command = command.audioCodec('aac')
-    } else if (fmt === 'mkv') {
-      // MKV: H.264 + AAC
-      if (needsVideoCodec) command = command.videoCodec('libx264')
-      if (needsAudioCodec) command = command.audioCodec('aac')
-    } else if (fmt === 'webm') {
-      // WebM: VP9 + Opus
-      if (needsVideoCodec) command = command.videoCodec('libvpx-vp9')
-      if (needsAudioCodec) command = command.audioCodec('libopus')
-    } else if (fmt === 'mov') {
-      // MOV: H.264 + AAC
-      if (needsVideoCodec) command = command.videoCodec('libx264')
-      if (needsAudioCodec) command = command.audioCodec('aac')
-    } else if (fmt === '3gp') {
-      // 3GP: H.264 + AAC (更好的兼容性，不再使用 H.263)
-      if (needsVideoCodec) command = command.videoCodec('libx264')
-      if (needsAudioCodec) command = command.audioCodec('aac')
-      // 3GP 需要特定参数
-      if (!settings?.resolution && !settings?.width) {
-        command = command.size('352x288')
-      }
-      command = command.outputOptions(['-profile:v', 'baseline', '-level', '3.0'])
-    } else if (fmt === 'mpg' || fmt === 'mpeg' || fmt === 'vob') {
-      // MPEG: MPEG-2 + MP2
-      if (needsVideoCodec) command = command.videoCodec('mpeg2video')
-      if (needsAudioCodec) command = command.audioCodec('mp2')
-    } else if (fmt === 'ts' || fmt === 'm2ts' || fmt === 'mts' || fmt === 'm2t') {
-      // TS: H.264 + AAC
-      if (needsVideoCodec) command = command.videoCodec('libx264')
-      if (needsAudioCodec) command = command.audioCodec('aac')
-    } else if (fmt === 'ogv') {
-      // OGV: Theora + Vorbis
-      if (needsVideoCodec) command = command.videoCodec('libtheora')
-      if (needsAudioCodec) command = command.audioCodec('libvorbis')
-    }
-    
     command
-      .toFormat(outputFormat)
+      .toFormat(conversionPlan.muxer)
       .on('start', (cmd: string) => {
         console.log('FFmpeg command:', cmd)
       })
@@ -1134,15 +1031,18 @@ ipcMain.handle('compress-video', async (_, options: {
   id: string
   inputPath: string
   outputPath: string
+  format?: string
   quality?: string // low, medium, high
   mode?: string
   resolution?: string
+  width?: number
+  height?: number
   videoBitrate?: string
   frameRate?: string
   audioBitrate?: string
 }) => {
   configureFFmpeg()
-  const { id, inputPath, outputPath, quality, mode, resolution, videoBitrate, frameRate, audioBitrate } = options
+  const { id, inputPath, outputPath, format, quality, mode, resolution, width, height, videoBitrate, frameRate, audioBitrate } = options
   const fs = require('fs')
   
   const outputDir = path.dirname(outputPath)
@@ -1165,44 +1065,61 @@ ipcMain.handle('compress-video', async (_, options: {
   const bitrateRatioMap: Record<string, number> = { speed: 0.45, quality: 0.6, clarity: 0.75, low: 0.45, medium: 0.6, high: 0.75 }
   const explicitVideoBitrate = videoBitrate && videoBitrate !== 'auto' ? Number(videoBitrate) : 0
   const targetVideoBitrate = explicitVideoBitrate || (sourceInfo.bitrateKbps > 0 ? Math.max(350, Math.floor(sourceInfo.bitrateKbps * (bitrateRatioMap[modeKey] || 0.6))) : 0)
+  const outputExt = outputExtensionFromPath(outputPath, format || 'mp4')
+  const outputFormat = outputFormatFromPath(outputPath, format || 'mp4')
+  const outputSize = outputSizeFromSettings({ resolution, width, height })
 
-  return new Promise((resolve, reject) => {
-    let command = ffmpeg(inputPath)
-      .videoCodec('libx264')
-      .audioCodec('aac')
+  const runCompression = (aggressive = false) => new Promise<{ outputSize: number }>((resolve, reject) => {
+    let command = applyCompressionCodecs(ffmpeg(inputPath), outputExt)
 
-    const outputOptions = ['-preset', presetMap[modeKey] || 'medium', '-crf', String(crfMap[modeKey] || 28), '-movflags', '+faststart', '-pix_fmt', 'yuv420p']
-    if (targetVideoBitrate > 0) {
-      command = command.videoBitrate(`${targetVideoBitrate}k`)
-      outputOptions.push('-maxrate', `${targetVideoBitrate}k`, '-bufsize', `${targetVideoBitrate * 2}k`)
+    const crf = aggressive ? Math.max((crfMap[modeKey] || 28) + 6, 34) : (crfMap[modeKey] || 28)
+    const preset = aggressive ? 'veryfast' : (presetMap[modeKey] || 'medium')
+    const bitrateBase = targetVideoBitrate || (sourceInfo.bitrateKbps > 0 ? Math.floor(sourceInfo.bitrateKbps * 0.45) : 0)
+    const attemptVideoBitrate = aggressive && bitrateBase > 0 ? Math.max(180, Math.floor(bitrateBase * 0.55)) : targetVideoBitrate
+    const attemptAudioBitrate = aggressive ? '64k' : (audioBitrate && audioBitrate !== 'auto' ? `${audioBitrate}k` : '128k')
+    const h264LikeFormats = new Set(['mp4', 'm4v', 'mkv', 'mov', 'flv', 'f4v', 'swf', '3gp', 'ts', 'm2ts', 'mts', 'm2t'])
+    const outputOptions = ['-pix_fmt', 'yuv420p']
+    if (h264LikeFormats.has(outputExt)) {
+      outputOptions.push('-preset', preset, '-crf', String(crf))
+    } else if (outputExt === 'webm') {
+      outputOptions.push('-crf', String(crf))
     }
+    if (['mp4', 'm4v', 'mov', 'f4v', '3gp'].includes(outputExt)) {
+      outputOptions.push('-movflags', '+faststart')
+    }
+    if (outputExt === 'flv' || outputExt === 'swf') {
+      outputOptions.push('-flvflags', 'add_keyframe_index')
+    }
+    if (outputExt === 'ogv') {
+      outputOptions.push('-max_muxing_queue_size', '4096')
+    }
+
+    if (attemptVideoBitrate > 0) {
+      command = command.videoBitrate(`${attemptVideoBitrate}k`)
+      outputOptions.push('-maxrate', `${attemptVideoBitrate}k`, '-bufsize', `${attemptVideoBitrate * 2}k`)
+    }
+
     command = command.outputOptions(outputOptions)
-    
-    if (resolution && resolution !== 'auto') {
-      command = command.size(resolution)
-    }
-    if (frameRate && frameRate !== 'auto') {
-      command = command.fps(Number(frameRate))
-    }
-    command = command.audioBitrate(audioBitrate && audioBitrate !== 'auto' ? `${audioBitrate}k` : '128k')
-    
+    if (outputSize) command = command.size(outputSize)
+    if (frameRate && frameRate !== 'auto') command = command.fps(Number(frameRate))
+    command = command.audioBitrate(attemptAudioBitrate)
+
     convertTasks.set(id, command)
-    
+
     command
-      .toFormat('mp4')
-      .on('start', (cmd: string) => console.log('Compress command:', cmd))
+      .toFormat(outputFormat)
+      .on('start', (cmd: string) => console.log(aggressive ? 'Compress retry command:' : 'Compress command:', cmd))
       .on('progress', (progress: { percent?: number }) => {
-        mainWindow?.webContents.send('compress-progress', { id, percent: progress.percent || 0 })
+        const percent = aggressive ? 50 + ((progress.percent || 0) / 2) : Math.min(progress.percent || 0, 50)
+        mainWindow?.webContents.send('compress-progress', { id, percent })
       })
       .on('end', () => {
         convertTasks.delete(id)
         try {
-          const outputSize = fs.statSync(outputPath).size
-          if (sourceInfo.size && outputSize >= sourceInfo.size) {
-            console.warn(`Compressed file is not smaller: ${outputSize} >= ${sourceInfo.size}`)
-          }
-        } catch (e) { /* ignore size check */ }
-        resolve({ success: true, outputPath })
+          resolve({ outputSize: fs.statSync(outputPath).size })
+        } catch (error) {
+          reject(error)
+        }
       })
       .on('error', (err: Error) => {
         convertTasks.delete(id)
@@ -1210,6 +1127,22 @@ ipcMain.handle('compress-video', async (_, options: {
       })
       .save(outputPath)
   })
+
+  const primaryResult = await runCompression(false)
+  if (!sourceInfo.size || primaryResult.outputSize < sourceInfo.size) {
+    return { success: true, outputPath, outputSize: primaryResult.outputSize, originalSize: sourceInfo.size }
+  }
+
+  console.warn(`Compressed file is not smaller, retrying aggressively: ${primaryResult.outputSize} >= ${sourceInfo.size}`)
+  try { fs.unlinkSync(outputPath) } catch (e) { /* ignore retry cleanup */ }
+
+  const retryResult = await runCompression(true)
+  if (retryResult.outputSize < sourceInfo.size) {
+    return { success: true, outputPath, outputSize: retryResult.outputSize, originalSize: sourceInfo.size, retried: true }
+  }
+
+  try { fs.unlinkSync(outputPath) } catch (e) { /* ignore failed compression cleanup */ }
+  throw new Error(`压缩后文件仍未小于源文件（源文件 ${sourceInfo.size} 字节，输出 ${retryResult.outputSize} 字节）。源文件可能已经高度压缩，请选择更低分辨率或更低码率。`)
 })
 
 // 音频转换
@@ -1397,18 +1330,8 @@ ipcMain.handle('video-to-gif', async (_, options: {
 })
 
 const applyWatermarkOutputSettings = (command: ffmpeg.FfmpegCommand, settings?: { resolution?: string; width?: number; height?: number }) => {
-  if (settings?.width && settings?.height) {
-    return command.size(`${settings.width}x${settings.height}`)
-  }
-  if (settings?.resolution && settings.resolution !== 'auto' && !String(settings.resolution).startsWith('custom')) {
-    return command.size(settings.resolution)
-  }
-  return command
-}
-
-const outputFormatFromPath = (outputPath: string) => {
-  const ext = path.extname(outputPath).slice(1).toLowerCase()
-  return ext === 'm4v' ? 'mp4' : (ext || 'mp4')
+  const outputSize = outputSizeFromSettings(settings)
+  return outputSize ? command.size(outputSize) : command
 }
 
 const watermarkEnableExpr = (wm: { startTime?: number; endTime?: number }) => {

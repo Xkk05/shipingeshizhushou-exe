@@ -47,6 +47,24 @@ type WebSection = {
   }
 }
 
+type WebSectionOverrides = {
+  header?: Partial<WebSection['header']>
+  footer?: Partial<WebSection['footer']>
+  home?: Partial<Omit<WebSection['home'], 'cards' | 'badges'>> & {
+    cards?: Partial<WebSection['home']['cards']>
+    badges?: Partial<WebSection['home']['badges']>
+  }
+  workspace?: {
+    short?: Partial<WebSection['workspace']['short']>
+    tip?: Partial<WebSection['workspace']['tip']>
+  }
+}
+
+const mergeStringRecord = (
+  base: Record<string, string>,
+  override?: Partial<Record<string, string>>,
+): Record<string, string> => ({ ...base, ...(override || {}) }) as Record<string, string>
+
 export const SUPPORTED_LOCALES = [
   'ar', 'bn', 'de', 'en-US', 'es', 'fa', 'fr', 'he', 'hi', 'id', 'it', 'ja', 'ko', 'ms',
   'nl', 'pl', 'pt', 'pt-BR', 'ru', 'sw', 'ta', 'th', 'tl', 'tr', 'uk', 'ur', 'vi', 'zh-CN', 'zh-TW',
@@ -141,17 +159,22 @@ const baseWeb: WebSection = {
   },
 }
 
-const mergeWeb = (value: Partial<WebSection>): WebSection => ({
+const mergeWeb = (value: WebSectionOverrides): WebSection => ({
   ...baseWeb,
   ...value,
-  header: { ...baseWeb.header, ...(value.header || {}) },
-  footer: { ...baseWeb.footer, ...(value.footer || {}) },
-  home: { ...baseWeb.home, ...(value.home || {}) },
+  header: mergeStringRecord(baseWeb.header, value.header),
+  footer: mergeStringRecord(baseWeb.footer, value.footer),
+  home: {
+    ...baseWeb.home,
+    ...(value.home || {}),
+    cards: mergeStringRecord(baseWeb.home.cards, value.home?.cards),
+    badges: mergeStringRecord(baseWeb.home.badges, value.home?.badges),
+  },
   workspace: {
     ...baseWeb.workspace,
     ...(value.workspace || {}),
-    short: { ...baseWeb.workspace.short, ...(value.workspace?.short || {}) },
-    tip: { ...baseWeb.workspace.tip, ...(value.workspace?.tip || {}) },
+    short: mergeStringRecord(baseWeb.workspace.short, value.workspace?.short),
+    tip: mergeStringRecord(baseWeb.workspace.tip, value.workspace?.tip),
   },
 })
 

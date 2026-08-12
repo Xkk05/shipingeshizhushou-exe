@@ -248,13 +248,14 @@ export const setupRouterSeo = (router: Router, i18n: I18nLike) => {
   let currentSeoKey: SeoKey = 'home'
 
   const refreshSeo = () => updateSeo(currentSeoKey, i18n)
+  const localeRef = i18n.global.locale
 
   router.afterEach((to) => {
     currentSeoKey = (to.meta?.seoKey as SeoKey | undefined) || (to.name === 'Home' ? 'home' : 'video-convert')
     refreshSeo()
   })
 
-  if (typeof i18n.global.locale !== 'string' && 'value' in i18n.global.locale) {
-    watch(() => i18n.global.locale.value, refreshSeo)
+  if (typeof localeRef !== 'string') {
+    watch(() => localeRef.value, refreshSeo)
   }
 }
