@@ -9,6 +9,7 @@ import ffmpeg from 'fluent-ffmpeg';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import ffprobeInstaller from '@ffprobe-installer/ffprobe';
 import { v4 as uuidv4 } from 'uuid';
+import { createAudioConversionPlan, isAudioOutputFormat } from '../electron/audioConversionProfiles';
 
 // 优先使用系统安装的 ffmpeg，如果找不到再使用 installer 提供的路径
 const getFFmpegPath = () => {
@@ -309,6 +310,24 @@ app.post('/api/convert', async (req: Request, res: Response) => {
   task.outputFile = undefined;
   task.downloadUrl = undefined;
 
+  const saveConvertCommand = (targetCommand: ffmpeg.FfmpegCommand, muxer: string) => {
+    targetCommand
+      .toFormat(muxer)
+      .on('progress', (progress) => {
+        const percent = Number(progress.percent || 0);
+        task.percent = Math.max(0, Math.min(100, Math.round(percent)));
+      })
+      .on('end', () => {
+        finalizeTaskSuccess(task, outputFilename);
+      })
+      .on('error', (error) => {
+        finalizeTaskError(task, error);
+      })
+      .save(outputFilePath);
+
+    res.json({ success: true, id });
+  };
+
   let command: ffmpeg.FfmpegCommand;
 
   if (Array.isArray(inputPaths) && inputPaths.length > 1) {
@@ -345,6 +364,28 @@ app.post('/api/convert', async (req: Request, res: Response) => {
 
   if (duration !== undefined && duration !== null && duration !== '') {
     command = command.duration(Number(duration));
+  }
+
+  if (isAudioOutputFormat(resolvedFormat)) {
+    const audioPlan = createAudioConversionPlan(resolvedFormat, {
+      ...settings,
+      audioBitrate: settings?.audioBitrate && settings.audioBitrate !== 'auto'
+        ? settings.audioBitrate
+        : audioBitrate || bitrate,
+      sampleRate: settings?.sampleRate && settings.sampleRate !== 'auto'
+        ? settings.sampleRate
+        : sampleRate,
+      channels: settings?.channels,
+    });
+
+    command = command.noVideo().audioCodec(audioPlan.audioCodec);
+    if (audioPlan.audioBitrate) command = command.audioBitrate(audioPlan.audioBitrate);
+    if (audioPlan.sampleRate) command = command.audioFrequency(audioPlan.sampleRate);
+    if (audioPlan.audioChannels) command = command.audioChannels(audioPlan.audioChannels);
+    if (audioPlan.outputOptions.length > 0) command = command.outputOptions(audioPlan.outputOptions);
+
+    saveConvertCommand(command, audioPlan.muxer);
+    return;
   }
 
   const resolvedResolution = settings?.resolution && settings.resolution !== 'auto'
@@ -407,21 +448,7 @@ app.post('/api/convert', async (req: Request, res: Response) => {
     command = command.fps(resolvedFrameRate);
   }
 
-  command
-    .toFormat(resolvedFormat)
-    .on('progress', (progress) => {
-      const percent = Number(progress.percent || 0);
-      task.percent = Math.max(0, Math.min(100, Math.round(percent)));
-    })
-    .on('end', () => {
-      finalizeTaskSuccess(task, outputFilename);
-    })
-    .on('error', (error) => {
-      finalizeTaskError(task, error);
-    })
-    .save(outputFilePath);
-
-  res.json({ success: true, id });
+  saveConvertCommand(command, resolvedFormat);
 });
 
 app.post('/api/add-watermark', async (req: Request, res: Response) => {

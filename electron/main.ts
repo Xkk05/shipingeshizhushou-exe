@@ -12,6 +12,11 @@ import {
   outputSizeFromSettings,
   type VideoConversionSettings,
 } from './videoConversionProfiles'
+import {
+  createAudioConversionPlan,
+  isAudioOutputFormat,
+  type AudioConversionSettings,
+} from './audioConversionProfiles'
 
 // ==================== 机器码生成功能 ====================
 
@@ -210,6 +215,85 @@ let mainWindow: BrowserWindow | null = null
 
 // 存储转换任务
 const convertTasks = new Map<string, ffmpeg.FfmpegCommand>()
+
+type AudioConversionRequest = {
+  id: string
+  inputPath: string
+  outputPath: string
+  format: string
+  bitrate?: string
+  sampleRate?: string
+  channels?: string
+  settings?: AudioConversionSettings
+}
+
+const selectedAudioOption = (
+  primary: string | number | undefined,
+  fallback: string | number | undefined,
+) =>
+  primary !== undefined && primary !== null && primary !== 'auto' ? primary : fallback
+
+const audioSettingsFromOptions = (options: AudioConversionRequest): AudioConversionSettings => ({
+  ...options.settings,
+  audioBitrate: selectedAudioOption(options.settings?.audioBitrate, options.bitrate),
+  sampleRate: selectedAudioOption(options.settings?.sampleRate, options.sampleRate),
+  channels: selectedAudioOption(options.settings?.channels, options.channels),
+})
+
+const applyAudioConversionPlan = (
+  command: ffmpeg.FfmpegCommand,
+  format: string,
+  settings: AudioConversionSettings,
+) => {
+  const plan = createAudioConversionPlan(format, settings)
+  let nextCommand = command.noVideo().audioCodec(plan.audioCodec)
+
+  if (plan.audioBitrate) nextCommand = nextCommand.audioBitrate(plan.audioBitrate)
+  if (plan.sampleRate) nextCommand = nextCommand.audioFrequency(plan.sampleRate)
+  if (plan.audioChannels) nextCommand = nextCommand.audioChannels(plan.audioChannels)
+  if (plan.outputOptions.length > 0) nextCommand = nextCommand.outputOptions(plan.outputOptions)
+
+  return nextCommand.toFormat(plan.muxer)
+}
+
+const runAudioConversionTask = (
+  options: AudioConversionRequest,
+  progressChannels: string[],
+  logLabel: string,
+) => {
+  configureFFmpeg()
+  const { id, inputPath, outputPath, format } = options
+  const fs = require('fs')
+
+  const outputDir = path.dirname(outputPath)
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true })
+  }
+
+  return new Promise((resolve, reject) => {
+    const command = applyAudioConversionPlan(ffmpeg(inputPath), format, audioSettingsFromOptions(options))
+
+    convertTasks.set(id, command)
+
+    command
+      .on('start', (cmd: string) => console.log(`${logLabel}:`, cmd))
+      .on('progress', (progress: { percent?: number }) => {
+        for (const channel of progressChannels) {
+          mainWindow?.webContents.send(channel, { id, percent: progress.percent || 0 })
+        }
+      })
+      .on('end', () => {
+        convertTasks.delete(id)
+        resolve({ success: true, outputPath })
+      })
+      .on('error', (err: Error) => {
+        console.error(`${logLabel} error:`, err.message)
+        convertTasks.delete(id)
+        reject(err)
+      })
+      .save(outputPath)
+  })
+}
 
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('disable-gpu')
@@ -786,8 +870,16 @@ ipcMain.handle('convert-video', async (_, options: {
   format: string
   settings?: VideoConversionSettings
 }) => {
-  configureFFmpeg()
   const { id, inputPath, outputPath, format, settings } = options
+  if (isAudioOutputFormat(format)) {
+    return runAudioConversionTask(
+      { id, inputPath, outputPath, format, settings },
+      ['convert-progress', 'audio-progress'],
+      'Audio-only convert command',
+    )
+  }
+
+  configureFFmpeg()
   const fs = require('fs')
   
   // 确保输出目录存在
@@ -1153,69 +1245,10 @@ ipcMain.handle('convert-audio', async (_, options: {
   format: string
   bitrate?: string
   sampleRate?: string
+  channels?: string
+  settings?: AudioConversionSettings
 }) => {
-  configureFFmpeg()
-  const { id, inputPath, outputPath, format, bitrate, sampleRate } = options
-  const fs = require('fs')
-  
-  const outputDir = path.dirname(outputPath)
-  if (!fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir, { recursive: true })
-  }
-  
-  return new Promise((resolve, reject) => {
-    let command = ffmpeg(inputPath).noVideo()
-    
-    // 根据格式设置音频编码器
-    const fmt = format.toLowerCase()
-    
-    if (fmt === 'm4a' || fmt === 'm4r') {
-      // M4A 和 M4R 使用 AAC 编码器和 MP4 容器
-      command = command.audioCodec('aac')
-      command = command.toFormat('ipod') // 使用 ipod 格式（MP4 容器）
-    } else if (fmt === 'mp3') {
-      command = command.audioCodec('libmp3lame')
-      command = command.toFormat('mp3')
-    } else if (fmt === 'wav') {
-      command = command.audioCodec('pcm_s16le')
-      command = command.toFormat('wav')
-    } else if (fmt === 'flac') {
-      command = command.audioCodec('flac')
-      command = command.toFormat('flac')
-    } else if (fmt === 'ogg') {
-      command = command.audioCodec('libvorbis')
-      command = command.toFormat('ogg')
-    } else if (fmt === 'aac') {
-      command = command.audioCodec('aac')
-      command = command.toFormat('adts')
-    } else if (fmt === 'wma') {
-      command = command.audioCodec('wmav2')
-      command = command.toFormat('asf')
-    } else {
-      command = command.toFormat(fmt)
-    }
-    
-    if (bitrate && fmt !== 'flac' && fmt !== 'wav') command = command.audioBitrate(bitrate)
-    if (sampleRate) command = command.audioFrequency(parseInt(sampleRate))
-    
-    convertTasks.set(id, command)
-    
-    command
-      .on('start', (cmd: string) => console.log('Audio convert command:', cmd))
-      .on('progress', (progress: { percent?: number }) => {
-        mainWindow?.webContents.send('audio-progress', { id, percent: progress.percent || 0 })
-      })
-      .on('end', () => {
-        convertTasks.delete(id)
-        resolve({ success: true, outputPath })
-      })
-      .on('error', (err: Error) => {
-        console.error('Audio convert error:', err.message)
-        convertTasks.delete(id)
-        reject(err)
-      })
-      .save(outputPath)
-  })
+  return runAudioConversionTask(options, ['audio-progress', 'convert-progress'], 'Audio convert command')
 })
 
 // 视频提取音频
@@ -1226,58 +1259,10 @@ ipcMain.handle('extract-audio', async (_, options: {
   format: string
   bitrate?: string
   sampleRate?: string
+  channels?: string
+  settings?: AudioConversionSettings
 }) => {
-  configureFFmpeg()
-  const { id, inputPath, outputPath, format, bitrate, sampleRate } = options
-  const fs = require('fs')
-  
-  const outputDir = path.dirname(outputPath)
-  if (!fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir, { recursive: true })
-  }
-  
-  return new Promise((resolve, reject) => {
-    let command = ffmpeg(inputPath).noVideo()
-    const fmt = format.toLowerCase()
-
-    if (fmt === 'm4a' || fmt === 'm4r') {
-      command = command.audioCodec('aac').toFormat('ipod')
-    } else if (fmt === 'mp3') {
-      command = command.audioCodec('libmp3lame').toFormat('mp3')
-    } else if (fmt === 'wav') {
-      command = command.audioCodec('pcm_s16le').toFormat('wav')
-    } else if (fmt === 'flac') {
-      command = command.audioCodec('flac').toFormat('flac')
-    } else if (fmt === 'ogg') {
-      command = command.audioCodec('libvorbis').toFormat('ogg')
-    } else if (fmt === 'aac') {
-      command = command.audioCodec('aac').toFormat('adts')
-    } else if (fmt === 'wma') {
-      command = command.audioCodec('wmav2').toFormat('asf')
-    } else {
-      command = command.toFormat(fmt)
-    }
-
-    if (bitrate && fmt !== 'flac' && fmt !== 'wav') command = command.audioBitrate(bitrate)
-    if (sampleRate) command = command.audioFrequency(parseInt(sampleRate))
-    
-    convertTasks.set(id, command)
-    
-    command
-      .on('start', (cmd: string) => console.log('Extract audio command:', cmd))
-      .on('progress', (progress: { percent?: number }) => {
-        mainWindow?.webContents.send('extract-progress', { id, percent: progress.percent || 0 })
-      })
-      .on('end', () => {
-        convertTasks.delete(id)
-        resolve({ success: true, outputPath })
-      })
-      .on('error', (err: Error) => {
-        convertTasks.delete(id)
-        reject(err)
-      })
-      .save(outputPath)
-  })
+  return runAudioConversionTask(options, ['extract-progress', 'convert-progress'], 'Extract audio command')
 })
 
 // 视频转GIF

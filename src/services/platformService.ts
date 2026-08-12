@@ -51,6 +51,9 @@ const API_BASE = rawApiBase.replace(/\/+$/, '');
 
 const buildApiUrl = (pathname: string) => `${API_BASE}${pathname}`;
 
+const audioOutputFormats = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'm4r', 'mp2', 'aac', 'wma', 'aiff']);
+const isAudioOutputFormat = (format?: string) => Boolean(format && audioOutputFormats.has(String(format).toLowerCase()));
+
 const normalizeDownloadUrl = (url: string) => {
   if (/^https?:\/\//i.test(url)) return url;
   return `${window.location.origin}${url.startsWith('/') ? url : `/${url}`}`;
@@ -96,7 +99,7 @@ class ElectronPlatformService implements PlatformService {
       'extract-audio': 'extract-audio',
       'video-to-gif': 'video-to-gif',
     };
-    const channel = channelMap[options?.type] || 'convert-video';
+    const channel = channelMap[options?.type] || (isAudioOutputFormat(options?.format) ? 'convert-audio' : 'convert-video');
     return await this.ipcRenderer.invoke(channel, options);
   }
   async removeWatermark(options: any): Promise<void> { return await this.ipcRenderer.invoke('remove-watermark', options); }

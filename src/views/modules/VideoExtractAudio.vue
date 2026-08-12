@@ -339,6 +339,8 @@ const extractAudio = async (file: any, showDialog = true) => {
         format: file.outputFormat || outputFormat.value,
         bitrate: file.settings?.audioBitrate && file.settings.audioBitrate !== 'auto' ? `${file.settings.audioBitrate}k` : undefined,
         sampleRate: file.settings?.sampleRate && file.settings.sampleRate !== 'auto' ? file.settings.sampleRate : undefined,
+        channels: file.settings?.channels && file.settings.channels !== 'auto' ? file.settings.channels : undefined,
+        settings: file.settings,
         type: 'extract-audio'
       })
       file.status = 'completed'; file.progress = 100
@@ -361,6 +363,8 @@ const extractAll = async () => {
           format: file.outputFormat || outputFormat.value,
           bitrate: file.settings?.audioBitrate && file.settings.audioBitrate !== 'auto' ? `${file.settings.audioBitrate}k` : undefined,
           sampleRate: file.settings?.sampleRate && file.settings.sampleRate !== 'auto' ? file.settings.sampleRate : undefined,
+          channels: file.settings?.channels && file.settings.channels !== 'auto' ? file.settings.channels : undefined,
+          settings: file.settings,
           type: 'extract-audio'
         })
         file.status = 'completed'; file.progress = 100

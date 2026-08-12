@@ -218,10 +218,8 @@
           <div class="section">
             <div class="audio-form-row">
               <label>{{ t('common.audioCodec') }}</label>
-              <el-select v-model="settings.audioCodec" size="small" class="audio-select">
+              <el-select v-model="settings.audioCodec" size="small" class="audio-select" disabled>
                 <el-option :label="t('common.auto')" value="auto" />
-                <el-option label="AAC" value="aac" />
-                <el-option label="AC3" value="ac3" />
               </el-select>
               <label>{{ t('common.audioChannels') }}</label>
               <el-select v-model="settings.channels" size="small" class="audio-select">
@@ -447,6 +445,9 @@ watch(() => props.modelValue, (newVal) => {
     } else {
       settings.value = { ...defaultSettings }
     }
+    if (audioFormats.includes(selectedFormat.value)) {
+      settings.value.audioCodec = 'auto'
+    }
   }
 })
 
@@ -460,6 +461,20 @@ const displayFormats = computed(() => {
     return formats.filter(f => f.toLowerCase().includes(searchQuery.value.toLowerCase()))
   }
   return formats
+})
+
+watch(formatTab, (nextTab) => {
+  if (nextTab === 'audio' && !audioFormats.includes(selectedFormat.value)) {
+    selectedFormat.value = 'MP3'
+  } else if (nextTab === 'video' && !videoFormats.includes(selectedFormat.value)) {
+    selectedFormat.value = 'MP4'
+  }
+})
+
+watch(selectedFormat, (format) => {
+  if (audioFormats.includes(format)) {
+    settings.value.audioCodec = 'auto'
+  }
 })
 
 // 获取格式图标颜色类

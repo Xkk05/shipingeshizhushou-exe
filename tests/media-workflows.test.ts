@@ -10,6 +10,7 @@ import ffmpegInstaller from '@ffmpeg-installer/ffmpeg'
 import ffprobeInstaller from '@ffprobe-installer/ffprobe'
 
 import { createVideoConversionPlan, type VideoConversionPlan, type VideoConversionSettings } from '../electron/videoConversionProfiles'
+import { createAudioConversionPlan, isAudioOutputFormat, type AudioConversionPlan, type AudioConversionSettings } from '../electron/audioConversionProfiles'
 
 type ProbeStream = {
   index?: number
@@ -107,6 +108,13 @@ const reportedOgvSwfSettings: VideoConversionSettings = {
   height: 500,
 }
 
+const staleAudioSettings: AudioConversionSettings = {
+  audioCodec: 'ac3',
+  audioBitrate: '320',
+  sampleRate: '44100',
+  channels: 'stereo',
+}
+
 const runVideoConversionPlan = (inputPath: string, outputPath: string, plan: VideoConversionPlan) =>
   new Promise<void>((resolve, reject) => {
     let command = ffmpeg(inputPath).videoCodec(plan.videoCodec).audioCodec(plan.audioCodec)
@@ -115,6 +123,18 @@ const runVideoConversionPlan = (inputPath: string, outputPath: string, plan: Vid
     if (plan.frameRate) command = command.fps(plan.frameRate)
     if (plan.videoBitrate) command = command.videoBitrate(`${plan.videoBitrate}k`)
     if (plan.audioBitrate) command = command.audioBitrate(`${plan.audioBitrate}k`)
+    if (plan.sampleRate) command = command.audioFrequency(plan.sampleRate)
+    if (plan.audioChannels) command = command.audioChannels(plan.audioChannels)
+    if (plan.outputOptions.length > 0) command = command.outputOptions(plan.outputOptions)
+
+    command.toFormat(plan.muxer).on('end', resolve).on('error', reject).save(outputPath)
+  })
+
+const runAudioConversionPlan = (inputPath: string, outputPath: string, plan: AudioConversionPlan) =>
+  new Promise<void>((resolve, reject) => {
+    let command = ffmpeg(inputPath).noVideo().audioCodec(plan.audioCodec)
+
+    if (plan.audioBitrate) command = command.audioBitrate(plan.audioBitrate)
     if (plan.sampleRate) command = command.audioFrequency(plan.sampleRate)
     if (plan.audioChannels) command = command.audioChannels(plan.audioChannels)
     if (plan.outputOptions.length > 0) command = command.outputOptions(plan.outputOptions)
@@ -373,24 +393,35 @@ describe('real media conversion workflows', () => {
     expect(metadata.format?.format_name).toContain('webm')
   }, timeoutMs)
 
-  it('extracts FLAC audio from video with the correct codec', async () => {
-    const outputPath = path.join(tempDir, 'extracted.flac')
+  it('exports audio-only formats with playable, container-safe codecs', async () => {
+    const expectedCodecs: Record<string, string> = {
+      mp3: 'mp3',
+      wav: 'pcm_s16le',
+      ogg: 'vorbis',
+      flac: 'flac',
+      m4a: 'aac',
+      m4r: 'aac',
+      aac: 'aac',
+      wma: 'wmav2',
+      aiff: 'pcm_s16be',
+      mp2: 'mp2',
+    }
 
-    await runFfmpeg(['-i', inputVideo, '-vn', '-c:a', 'flac', '-f', 'flac', outputPath])
+    for (const [format, expectedCodec] of Object.entries(expectedCodecs)) {
+      const outputPath = path.join(tempDir, `audio-safe.${format}`)
+      const plan = createAudioConversionPlan(format, staleAudioSettings)
 
-    const metadata = await probe(outputPath)
-    expect(audioStream(metadata)?.codec_name).toBe('flac')
-    expect(videoStream(metadata)).toBeUndefined()
-  }, timeoutMs)
+      expect(isAudioOutputFormat(format), `${format} should route to audio conversion`).toBe(true)
+      expect(plan.audioCodec, `${format} should ignore stale AC3`).not.toBe('ac3')
 
-  it('converts audio to MP3 with selected bitrate and sample rate', async () => {
-    const outputPath = path.join(tempDir, 'audio.mp3')
+      await runAudioConversionPlan(inputVideo, outputPath, plan)
 
-    await runFfmpeg(['-i', inputVideo, '-vn', '-c:a', 'libmp3lame', '-b:a', '96k', '-ar', '44100', '-f', 'mp3', outputPath])
-
-    const metadata = await probe(outputPath)
-    expect(audioStream(metadata)?.codec_name).toBe('mp3')
-    expect(audioStream(metadata)?.sample_rate).toBe('44100')
+      const metadata = await probe(outputPath)
+      expect(videoStream(metadata), `${format} should not contain a video stream`).toBeUndefined()
+      expect(audioStream(metadata)?.codec_name, `${format} should use the expected audio codec`).toBe(expectedCodec)
+      expect(audioStream(metadata)?.sample_rate, `${format} should apply selected sample rate`).toBe('44100')
+      await expectDecodesWithoutErrors(outputPath)
+    }
   }, timeoutMs)
 
   it('exports a GIF clip with the requested width and approximate duration', async () => {
