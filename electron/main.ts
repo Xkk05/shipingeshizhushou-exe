@@ -17,6 +17,10 @@ import {
   isAudioOutputFormat,
   type AudioConversionSettings,
 } from './audioConversionProfiles'
+import {
+  buildWatermarkFilters,
+  type FontStyleOptions,
+} from './watermarkFilters'
 
 // ==================== 机器码生成功能 ====================
 
@@ -1319,12 +1323,6 @@ const applyWatermarkOutputSettings = (command: ffmpeg.FfmpegCommand, settings?: 
   return outputSize ? command.size(outputSize) : command
 }
 
-const watermarkEnableExpr = (wm: { startTime?: number; endTime?: number }) => {
-  const start = Number(wm.startTime || 0)
-  const end = Number(wm.endTime || 0)
-  return end > start ? `:enable='between(t,${start},${end})'` : ''
-}
-
 // 视频添加水印
 ipcMain.handle('add-watermark', async (_, options: {
   id: string
@@ -1366,37 +1364,54 @@ ipcMain.handle('add-watermark', async (_, options: {
     fs.mkdirSync(outputDir, { recursive: true })
   }
   
-  // 获取系统字体路径（支持中文）
-  const getSystemFontPath = (fontFamily?: string): string => {
-    // Windows 字体映射表 - 使用完整路径
-    const windowsFontMap: Record<string, string[]> = {
-      'Microsoft YaHei': ['C:\\Windows\\Fonts\\msyh.ttc', 'C:\\Windows\\Fonts\\msyhbd.ttc'],
-      '微软雅黑': ['C:\\Windows\\Fonts\\msyh.ttc', 'C:\\Windows\\Fonts\\msyhbd.ttc'],
-      'SimSun': ['C:\\Windows\\Fonts\\simsun.ttc', 'C:\\Windows\\Fonts\\SIMSUN.TTC'],
-      '宋体': ['C:\\Windows\\Fonts\\simsun.ttc', 'C:\\Windows\\Fonts\\SIMSUN.TTC'],
-      'SimHei': ['C:\\Windows\\Fonts\\simhei.ttf', 'C:\\Windows\\Fonts\\SIMHEI.TTF'],
-      '黑体': ['C:\\Windows\\Fonts\\simhei.ttf', 'C:\\Windows\\Fonts\\SIMHEI.TTF'],
-      'Arial': ['C:\\Windows\\Fonts\\simhei.ttf', 'C:\\Windows\\Fonts\\msyh.ttc'], // Arial 也使用中文字体
+  // 获取系统字体路径（支持中文，并尽量匹配加粗/斜体样式）
+  const getSystemFontPath = (fontFamily?: string, style: FontStyleOptions = {}): string => {
+    type FontCandidates = {
+      regular: string[]
+      bold?: string[]
+      italic?: string[]
+      boldItalic?: string[]
     }
-    
-    // 检查字体文件是否存在
+
+    const windowsFontMap: Record<string, FontCandidates> = {
+      'Microsoft YaHei': {
+        regular: ['C:\\Windows\\Fonts\\msyh.ttc'],
+        bold: ['C:\\Windows\\Fonts\\msyhbd.ttc', 'C:\\Windows\\Fonts\\msyh.ttc'],
+      },
+      '微软雅黑': {
+        regular: ['C:\\Windows\\Fonts\\msyh.ttc'],
+        bold: ['C:\\Windows\\Fonts\\msyhbd.ttc', 'C:\\Windows\\Fonts\\msyh.ttc'],
+      },
+      'SimSun': { regular: ['C:\\Windows\\Fonts\\simsun.ttc', 'C:\\Windows\\Fonts\\SIMSUN.TTC'] },
+      '宋体': { regular: ['C:\\Windows\\Fonts\\simsun.ttc', 'C:\\Windows\\Fonts\\SIMSUN.TTC'] },
+      'SimHei': { regular: ['C:\\Windows\\Fonts\\simhei.ttf', 'C:\\Windows\\Fonts\\SIMHEI.TTF'] },
+      '黑体': { regular: ['C:\\Windows\\Fonts\\simhei.ttf', 'C:\\Windows\\Fonts\\SIMHEI.TTF'] },
+      Arial: {
+        regular: ['C:\\Windows\\Fonts\\arial.ttf', 'C:\\Windows\\Fonts\\simhei.ttf', 'C:\\Windows\\Fonts\\msyh.ttc'],
+        bold: ['C:\\Windows\\Fonts\\arialbd.ttf', 'C:\\Windows\\Fonts\\simhei.ttf', 'C:\\Windows\\Fonts\\msyhbd.ttc'],
+        italic: ['C:\\Windows\\Fonts\\ariali.ttf', 'C:\\Windows\\Fonts\\arial.ttf', 'C:\\Windows\\Fonts\\simhei.ttf'],
+        boldItalic: ['C:\\Windows\\Fonts\\arialbi.ttf', 'C:\\Windows\\Fonts\\arialbd.ttf', 'C:\\Windows\\Fonts\\simhei.ttf'],
+      },
+    }
+
     const checkFontExists = (paths: string[]): string | null => {
       for (const p of paths) {
-        if (fs.existsSync(p)) {
-          console.log('Found font:', p)
-          return p
-        }
+        if (fs.existsSync(p)) return p
       }
       return null
     }
-    
-    // 优先使用用户选择的字体
-    if (fontFamily && windowsFontMap[fontFamily]) {
-      const fontPath = checkFontExists(windowsFontMap[fontFamily])
-      if (fontPath) return fontPath
-    }
-    
-    // 默认字体优先级：黑体 > 微软雅黑 > 宋体（黑体是 .ttf 格式，兼容性更好）
+
+    const candidates = fontFamily && windowsFontMap[fontFamily] ? windowsFontMap[fontFamily] : windowsFontMap.Arial
+    const styledCandidates = style.bold && style.italic
+      ? candidates.boldItalic
+      : style.bold
+        ? candidates.bold
+        : style.italic
+          ? candidates.italic
+          : undefined
+    const fontPath = checkFontExists([...(styledCandidates || []), ...candidates.regular])
+    if (fontPath) return fontPath
+
     const defaultFontPaths = [
       'C:\\Windows\\Fonts\\simhei.ttf',
       'C:\\Windows\\Fonts\\SIMHEI.TTF',
@@ -1405,138 +1420,19 @@ ipcMain.handle('add-watermark', async (_, options: {
       'C:\\Windows\\Fonts\\simsun.ttc',
       'C:\\Windows\\Fonts\\SIMSUN.TTC',
     ]
-    
-    for (const fontPath of defaultFontPaths) {
-      if (fs.existsSync(fontPath)) {
-        console.log('Using default font:', fontPath)
-        return fontPath
-      }
-    }
-    
-    // 最后回退到 Arial
-    console.log('Fallback to Arial')
-    return 'C:\\Windows\\Fonts\\arial.ttf'
+
+    return checkFontExists(defaultFontPaths) || 'C:\\Windows\\Fonts\\arial.ttf'
   }
   
   return new Promise((resolve, reject) => {
     let command = ffmpeg(inputPath)
     
     if (watermarks && watermarks.length > 0) {
-      const filters: string[] = []
-      let lastOutput = '0:v'
-      let inputCount = 0
-      
-      watermarks.forEach((wm, idx) => {
-        const opacity = (wm.opacity || 100) / 100
-        const outputLabel = idx === watermarks.length - 1 ? 'out' : `v${idx}`
-        const enableExpr = watermarkEnableExpr(wm)
-        
-        if (wm.type === 'image' && wm.path) {
-          // 图片水印
-          command = command.input(wm.path)
-          inputCount++
-          const inputIdx = inputCount
-          const scale = wm.scale ? wm.scale / 100 : 0.5
-          
-          if (wm.position === 'tile') {
-            // 平铺模式 - 使用 split 滤镜复制水印流，然后多次叠加
-            const tileCount = 16 // 4x4 平铺
-            // 先缩放水印，然后 split 成多份
-            filters.push(`[${inputIdx}:v]scale=iw*${scale}:ih*${scale},format=rgba,colorchannelmixer=aa=${opacity},split=${tileCount}${Array.from({length: tileCount}, (_, i) => `[wm${idx}_${i}]`).join('')}`)
-            
-            // 4x4 平铺位置
-            const tilePositions = [
-              [0.0, 0.0], [0.25, 0.0], [0.5, 0.0], [0.75, 0.0],
-              [0.0, 0.25], [0.25, 0.25], [0.5, 0.25], [0.75, 0.25],
-              [0.0, 0.5], [0.25, 0.5], [0.5, 0.5], [0.75, 0.5],
-              [0.0, 0.75], [0.25, 0.75], [0.5, 0.75], [0.75, 0.75]
-            ]
-            
-            tilePositions.forEach(([px, py], i) => {
-              const currentOutput = i === tilePositions.length - 1 ? outputLabel : `t${idx}_${i}`
-              filters.push(`[${lastOutput}][wm${idx}_${i}]overlay=W*${px}:H*${py}${enableExpr}[${currentOutput}]`)
-              lastOutput = currentOutput
-            })
-          } else if (wm.position === 'grid') {
-            // 九宫格模式 - 使用 split 滤镜复制水印流
-            const gridCount = 9
-            filters.push(`[${inputIdx}:v]scale=iw*${scale}:ih*${scale},format=rgba,colorchannelmixer=aa=${opacity},split=${gridCount}${Array.from({length: gridCount}, (_, i) => `[wm${idx}_${i}]`).join('')}`)
-            
-            // 九宫格位置
-            const gridPositions = [
-              [0.1, 0.1], [0.4, 0.1], [0.7, 0.1],
-              [0.1, 0.4], [0.4, 0.4], [0.7, 0.4],
-              [0.1, 0.7], [0.4, 0.7], [0.7, 0.7]
-            ]
-            
-            gridPositions.forEach(([px, py], i) => {
-              const currentOutput = i === gridPositions.length - 1 ? outputLabel : `g${idx}_${i}`
-              filters.push(`[${lastOutput}][wm${idx}_${i}]overlay=W*${px}:H*${py}${enableExpr}[${currentOutput}]`)
-              lastOutput = currentOutput
-            })
-          } else {
-            // 自定义位置
-            const overlayX = wm.actualX !== undefined ? wm.actualX : (wm.x || 10)
-            const overlayY = wm.actualY !== undefined ? wm.actualY : (wm.y || 10)
-            filters.push(`[${inputIdx}:v]scale=iw*${scale}:ih*${scale},format=rgba,colorchannelmixer=aa=${opacity}[wm${idx}]`)
-            filters.push(`[${lastOutput}][wm${idx}]overlay=${overlayX}:${overlayY}${enableExpr}[${outputLabel}]`)
-            lastOutput = outputLabel
-          }
-        } else if (wm.type === 'text' && wm.text) {
-          // 文字水印 - 使用系统字体支持中文
-          // 使用实际字体大小（如果有），否则使用原始大小
-          const fontSize = wm.actualFontSize || wm.fontSize || 24
-          const fontPath = getSystemFontPath(wm.fontFamily)
-          console.log('Using font path:', fontPath)
-          console.log('Text content:', wm.text)
-          console.log('Font size:', fontSize)
-          
-          // 使用实际坐标（如果有），否则使用原始坐标
-          const actualX = wm.actualX !== undefined ? wm.actualX : (wm.x || 10)
-          const actualY = wm.actualY !== undefined ? wm.actualY : (wm.y || 10)
-          
-          // FFmpeg drawtext 滤镜路径格式：使用正斜杠，冒号前加单个反斜杠
-          const escapedFontPath = fontPath.replace(/\\/g, '/').replace(/:/g, '\\:')
-          
-          // 对文本进行转义：冒号、反斜杠、单引号需要转义
-          // FFmpeg drawtext 的 text 参数需要特殊转义
-          const escapedText = wm.text
-            .replace(/\\/g, '\\\\')  // 反斜杠
-            .replace(/:/g, '\\:')     // 冒号
-            .replace(/'/g, "'\\''")   // 单引号
-          
-          console.log('Escaped font path:', escapedFontPath)
-          console.log('Escaped text:', escapedText)
-          console.log('Actual position:', actualX, actualY)
-          
-          // 构建字体样式
-          let fontStyle = ''
-          if (wm.bold) fontStyle += ':force_style=Bold'
-          
-          if (wm.position === 'tile') {
-            // 文字平铺 - 多次绘制
-            let tileFilter = `[${lastOutput}]`
-            const positions = [
-              [0.0, 0.0], [0.25, 0.0], [0.5, 0.0], [0.75, 0.0],
-              [0.0, 0.2], [0.25, 0.2], [0.5, 0.2], [0.75, 0.2],
-              [0.0, 0.4], [0.25, 0.4], [0.5, 0.4], [0.75, 0.4],
-              [0.0, 0.6], [0.25, 0.6], [0.5, 0.6], [0.75, 0.6],
-              [0.0, 0.8], [0.25, 0.8], [0.5, 0.8], [0.75, 0.8]
-            ]
-            positions.forEach(([px, py], i) => {
-              tileFilter += `drawtext=text='${escapedText}':fontfile='${escapedFontPath}':fontsize=${fontSize}:fontcolor=white@${opacity}:x=w*${px}+10:y=h*${py}+10${fontStyle}${enableExpr}`
-              if (i < positions.length - 1) tileFilter += ','
-            })
-            tileFilter += `[${outputLabel}]`
-            filters.push(tileFilter)
-            lastOutput = outputLabel
-          } else {
-            filters.push(`[${lastOutput}]drawtext=text='${escapedText}':fontfile='${escapedFontPath}':fontsize=${fontSize}:fontcolor=white@${opacity}:x=${actualX}:y=${actualY}${fontStyle}${enableExpr}[${outputLabel}]`)
-            lastOutput = outputLabel
-          }
-        }
+      const { filters, imagePaths } = buildWatermarkFilters(watermarks, getSystemFontPath)
+      imagePaths.forEach((imagePath) => {
+        command = command.input(imagePath)
       })
-      
+
       if (filters.length > 0) {
         command = command.complexFilter(filters)
         command = command.outputOptions(['-map [out]', '-map 0:a?'])
