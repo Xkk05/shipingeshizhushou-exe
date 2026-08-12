@@ -8,6 +8,15 @@
       'is-web-item': !platformService.isElectron,
     }"
   >
+    <div v-if="selectable" class="selection-cell" @click.stop>
+      <el-checkbox
+        :model-value="selected"
+        :disabled="selectionDisabled"
+        :aria-label="`${t('common.selectFile')} ${file.name}`"
+        @change="handleSelectChange"
+      />
+    </div>
+
     <!-- 缩略图 -->
     <div class="thumbnail" @click="playVideo">
       <img v-if="file.thumbnail" :src="file.thumbnail" alt="" />
@@ -113,9 +122,12 @@ const { t } = useI18n()
 const props = defineProps<{
   file: any
   actionText?: string
+  selectable?: boolean
+  selected?: boolean
+  selectionDisabled?: boolean
 }>()
 
-const emit = defineEmits(['settings', 'convert', 'delete', 'update:file'])
+const emit = defineEmits(['settings', 'convert', 'delete', 'update:file', 'select-change'])
 
 import { platformService } from '@/services/platformService'
 
@@ -128,6 +140,10 @@ const formatSize = (bytes: number) => {
   const sizes = ['B', 'KB', 'MB', 'GB']
   const i = Math.floor(Math.log(bytes) / Math.log(k))
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + sizes[i]
+}
+
+const handleSelectChange = (value: string | number | boolean) => {
+  emit('select-change', Boolean(value))
 }
 
 const playVideo = async () => {
@@ -173,6 +189,24 @@ const cancelEditName = () => {
   margin-bottom: 12px;
   border: 1px solid #f0f0f0;
   transition: all 0.3s;
+
+  .selection-cell {
+    width: 28px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    :deep(.el-checkbox__inner) {
+      border-radius: 5px;
+      border-color: #9bd8d1;
+    }
+
+    :deep(.el-checkbox__input.is-checked .el-checkbox__inner) {
+      background: #36d1c4;
+      border-color: #36d1c4;
+    }
+  }
 
   &.converting {
     border-color: #36d1c4;
@@ -394,6 +428,11 @@ const cancelEditName = () => {
     .thumbnail {
       width: 100%;
       height: 190px;
+    }
+
+    .selection-cell {
+      width: auto;
+      justify-content: flex-start;
     }
 
     .arrow {

@@ -10,7 +10,7 @@
         </div>
       </div>
       <div class="action-area">
-        <el-button type="primary" class="action-btn" @click="$emit('action')">
+        <el-button type="primary" class="action-btn" :disabled="actionDisabled" @click="$emit('action')">
           {{ actionText }}
         </el-button>
       </div>
@@ -44,6 +44,7 @@ import { platformService } from '@/services/platformService'
 const props = defineProps<{
   actionText: string
   currentFormat?: string
+  actionDisabled?: boolean
 }>()
 
 const emit = defineEmits(['action', 'show-settings', 'output-path-change'])

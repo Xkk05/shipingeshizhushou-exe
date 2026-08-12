@@ -5,8 +5,36 @@
     <div class="content-area">
       <FileDropZone v-if="!files.length" @files-selected="onFilesFromDropZone" />
       <div v-else class="file-list-wrapper">
+        <div class="selection-toolbar">
+          <el-checkbox
+            :model-value="allSelectableSelected"
+            :indeterminate="someSelectableSelected"
+            :disabled="!selectableFiles.length"
+            @change="toggleSelectAll"
+          >
+            {{ allSelectableSelected ? t('common.deselectAll') : t('common.selectAll') }}
+          </el-checkbox>
+          <span class="selection-summary">
+            {{ t('common.selectedFilesCount', { count: selectedFiles.length }) }}
+          </span>
+          <span v-if="selectedFiles.length" class="selection-summary muted">
+            {{ t('common.convertibleFilesCount', { count: selectedConvertibleFiles.length }) }}
+          </span>
+        </div>
         <div class="file-list">
-          <FileListItem v-for="file in files" :key="file.id" :file="file" :action-text="t('common.convert')" @settings="openSettings(file)" @convert="convertFile(file)" @delete="deleteFile(file)" />
+          <FileListItem
+            v-for="file in files"
+            :key="file.id"
+            :file="file"
+            selectable
+            :selected="selectedFileIds.includes(file.id)"
+            :selection-disabled="file.status === 'converting'"
+            :action-text="t('common.convert')"
+            @select-change="setFileSelected(file, $event)"
+            @settings="openSettings(file)"
+            @convert="convertFile(file)"
+            @delete="deleteFile(file)"
+          />
         </div>
         <div v-if="isDragging" class="drag-overlay">
           <div class="drag-hint">
@@ -17,7 +45,14 @@
       </div>
     </div>
 
-    <ActionBar :action-text="t('common.convertAll')" :current-format="outputFormat" @action="convertAll" @show-settings="openSettings()" @output-path-change="handleOutputPathChange" />
+    <ActionBar
+      :action-text="batchActionText"
+      :action-disabled="batchActionDisabled"
+      :current-format="outputFormat"
+      @action="convertSelectedOrAll"
+      @show-settings="openSettings()"
+      @output-path-change="handleOutputPathChange"
+    />
     <SettingsDialog v-model="showSettings" type="video" :initial-settings="initialSettingsForDialog" :initial-format="initialFormatForDialog" @confirm="handleSettingsConfirm" @close="showSettings = false" />
     <QRUploadDialog v-model="showQRUpload" @files-uploaded="handleFilesUploaded" />
     <M3U8Dialog v-model="showURLDialog" @download-complete="handleURLDownloaded" />
@@ -26,7 +61,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useFileStore } from '@/stores/fileStore'
 import { storeToRefs } from 'pinia'
@@ -72,8 +107,36 @@ const isDragging = ref(false)
 const currentEditingFile = ref<any>(null)
 const initialSettingsForDialog = ref<any>(null)
 const initialFormatForDialog = ref<string>('')
+const selectedFileIds = ref<string[]>([])
 
 const videoExtensions = ['mp4', 'avi', 'wmv', 'flv', 'mkv', 'mov', 'webm', '3gp', 'f4v', 'swf', 'ogv', 'asf', 'vob', 'mpg', 'mpeg', 'wtv', 'ts', 'm2ts', 'mts', 'm2t', 'm4v']
+
+const selectableFiles = computed(() => files.value.filter((file) => file.status !== 'converting'))
+const selectedFiles = computed(() => files.value.filter((file) => selectedFileIds.value.includes(file.id)))
+const selectedConvertibleFiles = computed(() => selectedFiles.value.filter((file) => file.status !== 'converting'))
+const batchActionText = computed(() => selectedFiles.value.length ? t('common.convertSelected') : t('common.convertAll'))
+const batchActionDisabled = computed(() => selectedFiles.value.length > 0 && selectedConvertibleFiles.value.length === 0)
+const allSelectableSelected = computed(() => (
+  selectableFiles.value.length > 0 &&
+  selectableFiles.value.every((file) => selectedFileIds.value.includes(file.id))
+))
+const someSelectableSelected = computed(() => (
+  !allSelectableSelected.value &&
+  selectableFiles.value.some((file) => selectedFileIds.value.includes(file.id))
+))
+
+const setFileSelected = (file: any, selected: boolean) => {
+  if (file.status === 'converting') return
+  if (selected) {
+    if (!selectedFileIds.value.includes(file.id)) selectedFileIds.value = [...selectedFileIds.value, file.id]
+  } else {
+    selectedFileIds.value = selectedFileIds.value.filter((id) => id !== file.id)
+  }
+}
+
+const toggleSelectAll = (value: string | number | boolean) => {
+  selectedFileIds.value = value ? selectableFiles.value.map((file) => file.id) : []
+}
 
 onMounted(async () => {
   outputDir.value = await platformService.getDefaultOutputDir()
@@ -242,8 +305,14 @@ const formatDuration = (seconds: number) => {
   return h > 0 ? `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}` : `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
 }
 
-const clearFiles = () => { files.value = [] }
-const deleteFile = (file: any) => { files.value = files.value.filter((f) => f.id !== file.id) }
+const clearFiles = () => {
+  files.value = []
+  selectedFileIds.value = []
+}
+const deleteFile = (file: any) => {
+  files.value = files.value.filter((f) => f.id !== file.id)
+  selectedFileIds.value = selectedFileIds.value.filter((id) => id !== file.id)
+}
 
 const openSettings = (file?: any) => {
   if (file) {
@@ -270,43 +339,51 @@ const getOutputPath = (file: any) => {
   return platformService.join(outputDir.value, file.outputName)
 }
 
-const convertFile = async (file: any, showDialog = true) => {
+const runConversionForFile = async (file: any) => {
+  if (file.status === 'converting') return
+  file.status = 'converting'
+  file.progress = 0
+  try {
+    const settings = JSON.parse(JSON.stringify(file.settings || convertSettings.value))
+    await platformService.convertVideo({ id: file.id, inputPath: file.path, outputPath: getOutputPath(file), format: file.outputFormat, settings })
+    file.status = 'completed'
+    file.progress = 100
+  } catch (err: any) {
+    file.status = 'error'
+    console.error(t('error.convertFailed'), err)
+  }
+}
+
+const convertFile = async (file: any) => {
   await checkAuthAndExecute(async () => {
-    if (file.status === 'converting') return
-    file.status = 'converting'
-    file.progress = 0
-    try {
-      const settings = JSON.parse(JSON.stringify(file.settings || convertSettings.value))
-      await platformService.convertVideo({ id: file.id, inputPath: file.path, outputPath: getOutputPath(file), format: file.outputFormat, settings })
-      file.status = 'completed'
-      file.progress = 100
-    } catch (err: any) {
-      file.status = 'error'
-      console.error(t('error.convertFailed'), err)
-    }
+    await runConversionForFile(file)
   })
 }
 
 const convertAll = async () => {
   await checkAuthAndExecute(async () => {
     const pendingFiles = files.value.filter((f) => f.status === 'pending' || f.status === 'error')
-    let completedCount = 0
     for (const file of pendingFiles) {
-      if (file.status === 'converting') continue
-      file.status = 'converting'
-      file.progress = 0
-      try {
-        const settings = JSON.parse(JSON.stringify(file.settings || convertSettings.value))
-        await platformService.convertVideo({ id: file.id, inputPath: file.path, outputPath: getOutputPath(file), format: file.outputFormat, settings })
-        file.status = 'completed'
-        file.progress = 100
-        completedCount++
-      } catch (err: any) {
-        file.status = 'error'
-        console.error(t('error.convertFailed'), err)
-      }
+      await runConversionForFile(file)
     }
   })
+}
+
+const convertSelected = async () => {
+  await checkAuthAndExecute(async () => {
+    const targetFiles = [...selectedConvertibleFiles.value]
+    for (const file of targetFiles) {
+      await runConversionForFile(file)
+    }
+    selectedFileIds.value = []
+  })
+}
+
+const convertSelectedOrAll = () => {
+  if (selectedFiles.value.length) {
+    return convertSelected()
+  }
+  return convertAll()
 }
 
 const handleSettingsConfirm = (data: any) => {
@@ -355,6 +432,43 @@ const handleURLDownloaded = (filePath: string) => {
 .module-page { height: 100%; display: flex; flex-direction: column; background: transparent; }
 .content-area { flex: 1; overflow: hidden; display: flex; flex-direction: column; position: relative; }
 .file-list-wrapper { flex: 1; overflow: hidden; display: flex; flex-direction: column; position: relative; }
+.selection-toolbar {
+  margin: 0 20px 12px;
+  padding: 10px 14px;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  border: 1px solid #d8e4f0;
+  border-radius: 12px;
+  background: #fff;
+
+  :deep(.el-checkbox__label) {
+    color: #334155;
+    font-size: 13px;
+    font-weight: 400;
+  }
+
+  :deep(.el-checkbox__inner) {
+    border-radius: 5px;
+    border-color: #9bd8d1;
+  }
+
+  :deep(.el-checkbox__input.is-checked .el-checkbox__inner),
+  :deep(.el-checkbox__input.is-indeterminate .el-checkbox__inner) {
+    background: #36d1c4;
+    border-color: #36d1c4;
+  }
+
+  .selection-summary {
+    font-size: 13px;
+    color: #36a99f;
+  }
+
+  .selection-summary.muted {
+    color: #64748b;
+  }
+}
 .file-list { flex: 1; overflow-y: auto; padding: 0 20px; }
 .drag-overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(54, 209, 196, 0.1); border: 2px dashed #36d1c4; display: flex; align-items: center; justify-content: center; z-index: 10; .drag-hint { text-align: center; p { color: #36d1c4; font-size: 16px; margin-top: 12px; } } }
 .module-page :deep(.toolbar) { padding: 0 2px 18px; background: transparent; }
@@ -363,5 +477,5 @@ const handleURLDownloaded = (filePath: string) => {
 .module-page :deep(.content-area) { min-height: 420px; }
 .module-page :deep(.drop-zone) { min-height: 360px; }
 .module-page :deep(.action-bar) { margin-top: 20px; }
-@media (max-width: 900px) { .file-list { padding: 0 8px; } .module-page :deep(.top-toolbar) { padding: 12px; } .module-page :deep(.action-bar) { margin-top: 14px; } }
+@media (max-width: 900px) { .selection-toolbar { margin: 0 8px 10px; flex-wrap: wrap; } .file-list { padding: 0 8px; } .module-page :deep(.top-toolbar) { padding: 12px; } .module-page :deep(.action-bar) { margin-top: 14px; } }
 </style>
