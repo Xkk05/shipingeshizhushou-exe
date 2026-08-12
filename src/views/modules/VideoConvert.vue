@@ -114,8 +114,8 @@ const videoExtensions = ['mp4', 'avi', 'wmv', 'flv', 'mkv', 'mov', 'webm', '3gp'
 const selectableFiles = computed(() => files.value.filter((file) => file.status !== 'converting'))
 const selectedFiles = computed(() => files.value.filter((file) => selectedFileIds.value.includes(file.id)))
 const selectedConvertibleFiles = computed(() => selectedFiles.value.filter((file) => file.status !== 'converting'))
-const batchActionText = computed(() => selectedFiles.value.length ? t('common.convertSelected') : t('common.convertAll'))
-const batchActionDisabled = computed(() => selectedFiles.value.length > 0 && selectedConvertibleFiles.value.length === 0)
+const batchActionText = computed(() => t('common.convertSelected'))
+const batchActionDisabled = computed(() => selectedConvertibleFiles.value.length === 0)
 const allSelectableSelected = computed(() => (
   selectableFiles.value.length > 0 &&
   selectableFiles.value.every((file) => selectedFileIds.value.includes(file.id))
@@ -360,15 +360,6 @@ const convertFile = async (file: any) => {
   })
 }
 
-const convertAll = async () => {
-  await checkAuthAndExecute(async () => {
-    const pendingFiles = files.value.filter((f) => f.status === 'pending' || f.status === 'error')
-    for (const file of pendingFiles) {
-      await runConversionForFile(file)
-    }
-  })
-}
-
 const convertSelected = async () => {
   await checkAuthAndExecute(async () => {
     const targetFiles = [...selectedConvertibleFiles.value]
@@ -380,10 +371,8 @@ const convertSelected = async () => {
 }
 
 const convertSelectedOrAll = () => {
-  if (selectedFiles.value.length) {
-    return convertSelected()
-  }
-  return convertAll()
+  if (batchActionDisabled.value) return
+  return convertSelected()
 }
 
 const handleSettingsConfirm = (data: any) => {
