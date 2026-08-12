@@ -5,22 +5,14 @@
     <div class="content-area">
       <FileDropZone v-if="!files.length" @files-selected="onFilesFromDropZone" />
       <div v-else class="file-list-wrapper">
-        <div class="selection-toolbar">
-          <el-checkbox
-            :model-value="allSelectableSelected"
-            :indeterminate="someSelectableSelected"
-            :disabled="!selectableFiles.length"
-            @change="toggleSelectAll"
-          >
-            {{ allSelectableSelected ? t('common.deselectAll') : t('common.selectAll') }}
-          </el-checkbox>
-          <span class="selection-summary">
-            {{ t('common.selectedFilesCount', { count: selectedFiles.length }) }}
-          </span>
-          <span v-if="selectedFiles.length" class="selection-summary muted">
-            {{ t('common.convertibleFilesCount', { count: selectedConvertibleFiles.length }) }}
-          </span>
-        </div>
+        <SelectionToolbar
+          :all-selected="allSelectableSelected"
+          :some-selected="someSelectableSelected"
+          :disabled="!selectableFiles.length"
+          :selected-count="selectedFiles.length"
+          :ready-count="selectedReadyFiles.length"
+          @toggle-all="toggleSelectAll"
+        />
         <div class="file-list">
           <FileListItem
             v-for="file in files"
@@ -69,6 +61,7 @@ import { useAuthCheck } from '@/composables/useAuthCheck'
 import TopToolbar from '@/components/TopToolbar.vue'
 import FileDropZone from '@/components/FileDropZone.vue'
 import FileListItem from '@/components/FileListItem.vue'
+import SelectionToolbar from '@/components/SelectionToolbar.vue'
 import ActionBar from '@/components/ActionBar.vue'
 import SettingsDialog from '@/components/SettingsDialog.vue'
 import QRUploadDialog from '@/components/QRUploadDialog.vue'
@@ -76,6 +69,7 @@ import M3U8Dialog from '@/components/M3U8Dialog.vue'
 import { handleDragDropEvent, VIDEO_EXTENSIONS } from '@/utils/dragDropUtils'
 import AuthCodeDialog from '@/components/AuthCodeDialog.vue'
 import { platformService } from '@/services/platformService'
+import { useSelectableFiles } from '@/composables/useSelectableFiles'
 
 const { t } = useI18n()
 
@@ -107,36 +101,23 @@ const isDragging = ref(false)
 const currentEditingFile = ref<any>(null)
 const initialSettingsForDialog = ref<any>(null)
 const initialFormatForDialog = ref<string>('')
-const selectedFileIds = ref<string[]>([])
 
 const videoExtensions = ['mp4', 'avi', 'wmv', 'flv', 'mkv', 'mov', 'webm', '3gp', 'f4v', 'swf', 'ogv', 'asf', 'vob', 'mpg', 'mpeg', 'wtv', 'ts', 'm2ts', 'mts', 'm2t', 'm4v']
 
-const selectableFiles = computed(() => files.value.filter((file) => file.status !== 'converting'))
-const selectedFiles = computed(() => files.value.filter((file) => selectedFileIds.value.includes(file.id)))
-const selectedConvertibleFiles = computed(() => selectedFiles.value.filter((file) => file.status !== 'converting'))
 const batchActionText = computed(() => t('common.convertSelected'))
-const batchActionDisabled = computed(() => selectedConvertibleFiles.value.length === 0)
-const allSelectableSelected = computed(() => (
-  selectableFiles.value.length > 0 &&
-  selectableFiles.value.every((file) => selectedFileIds.value.includes(file.id))
-))
-const someSelectableSelected = computed(() => (
-  !allSelectableSelected.value &&
-  selectableFiles.value.some((file) => selectedFileIds.value.includes(file.id))
-))
-
-const setFileSelected = (file: any, selected: boolean) => {
-  if (file.status === 'converting') return
-  if (selected) {
-    if (!selectedFileIds.value.includes(file.id)) selectedFileIds.value = [...selectedFileIds.value, file.id]
-  } else {
-    selectedFileIds.value = selectedFileIds.value.filter((id) => id !== file.id)
-  }
-}
-
-const toggleSelectAll = (value: string | number | boolean) => {
-  selectedFileIds.value = value ? selectableFiles.value.map((file) => file.id) : []
-}
+const {
+  selectedFileIds,
+  selectableFiles,
+  selectedFiles,
+  selectedReadyFiles,
+  batchActionDisabled,
+  allSelectableSelected,
+  someSelectableSelected,
+  setFileSelected,
+  toggleSelectAll,
+  clearSelection,
+  removeSelection,
+} = useSelectableFiles(files)
 
 onMounted(async () => {
   outputDir.value = await platformService.getDefaultOutputDir()
@@ -307,11 +288,11 @@ const formatDuration = (seconds: number) => {
 
 const clearFiles = () => {
   files.value = []
-  selectedFileIds.value = []
+  clearSelection()
 }
 const deleteFile = (file: any) => {
   files.value = files.value.filter((f) => f.id !== file.id)
-  selectedFileIds.value = selectedFileIds.value.filter((id) => id !== file.id)
+  removeSelection(file)
 }
 
 const openSettings = (file?: any) => {
@@ -362,11 +343,11 @@ const convertFile = async (file: any) => {
 
 const convertSelected = async () => {
   await checkAuthAndExecute(async () => {
-    const targetFiles = [...selectedConvertibleFiles.value]
+    const targetFiles = [...selectedReadyFiles.value]
     for (const file of targetFiles) {
       await runConversionForFile(file)
     }
-    selectedFileIds.value = []
+    clearSelection()
   })
 }
 
@@ -421,43 +402,6 @@ const handleURLDownloaded = (filePath: string) => {
 .module-page { height: 100%; display: flex; flex-direction: column; background: transparent; }
 .content-area { flex: 1; overflow: hidden; display: flex; flex-direction: column; position: relative; }
 .file-list-wrapper { flex: 1; overflow: hidden; display: flex; flex-direction: column; position: relative; }
-.selection-toolbar {
-  margin: 0 20px 12px;
-  padding: 10px 14px;
-  min-height: 42px;
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  border: 1px solid #d8e4f0;
-  border-radius: 12px;
-  background: #fff;
-
-  :deep(.el-checkbox__label) {
-    color: #334155;
-    font-size: 13px;
-    font-weight: 400;
-  }
-
-  :deep(.el-checkbox__inner) {
-    border-radius: 5px;
-    border-color: #9bd8d1;
-  }
-
-  :deep(.el-checkbox__input.is-checked .el-checkbox__inner),
-  :deep(.el-checkbox__input.is-indeterminate .el-checkbox__inner) {
-    background: #36d1c4;
-    border-color: #36d1c4;
-  }
-
-  .selection-summary {
-    font-size: 13px;
-    color: #36a99f;
-  }
-
-  .selection-summary.muted {
-    color: #64748b;
-  }
-}
 .file-list { flex: 1; overflow-y: auto; padding: 0 20px; }
 .drag-overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(54, 209, 196, 0.1); border: 2px dashed #36d1c4; display: flex; align-items: center; justify-content: center; z-index: 10; .drag-hint { text-align: center; p { color: #36d1c4; font-size: 16px; margin-top: 12px; } } }
 .module-page :deep(.toolbar) { padding: 0 2px 18px; background: transparent; }
@@ -466,5 +410,5 @@ const handleURLDownloaded = (filePath: string) => {
 .module-page :deep(.content-area) { min-height: 420px; }
 .module-page :deep(.drop-zone) { min-height: 360px; }
 .module-page :deep(.action-bar) { margin-top: 20px; }
-@media (max-width: 900px) { .selection-toolbar { margin: 0 8px 10px; flex-wrap: wrap; } .file-list { padding: 0 8px; } .module-page :deep(.top-toolbar) { padding: 12px; } .module-page :deep(.action-bar) { margin-top: 14px; } }
+@media (max-width: 900px) { .file-list { padding: 0 8px; } .module-page :deep(.top-toolbar) { padding: 12px; } .module-page :deep(.action-bar) { margin-top: 14px; } }
 </style>

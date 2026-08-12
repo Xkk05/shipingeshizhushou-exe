@@ -5,8 +5,24 @@
     <div class="content-area">
       <FileDropZone v-if="!files.length" @files-selected="onFilesFromDropZone" />
       <div v-else class="file-list-wrapper">
+        <SelectionToolbar
+          :all-selected="allSelectableSelected"
+          :some-selected="someSelectableSelected"
+          :disabled="!selectableFiles.length"
+          :selected-count="selectedFiles.length"
+          :ready-count="selectedReadyFiles.length"
+          @toggle-all="toggleSelectAll"
+        />
         <div class="file-list">
           <div v-for="(file, index) in files" :key="file.id" class="merge-item">
+            <div class="selection-cell" @click.stop>
+              <el-checkbox
+                :model-value="selectedFileIds.includes(file.id)"
+                :disabled="file.status === 'converting'"
+                :aria-label="`${$t('common.selectFile')} ${file.name}`"
+                @change="setFileSelected(file, Boolean($event))"
+              />
+            </div>
             <div class="thumbnail" @click="playVideo(file)">
               <img v-if="file.thumbnail" :src="file.thumbnail" alt="" />
               <div v-else class="video-icon">
@@ -57,7 +73,7 @@
           <el-input v-model="outputName" class="name-input" :placeholder="$t('common.mergedVideoDefaultName')" />
         </div>
         <div class="action-area">
-          <el-button type="primary" class="action-btn" :disabled="files.length < 2 || merging" @click="mergeAll">
+          <el-button type="primary" class="action-btn" :disabled="mergeActionDisabled" @click="mergeAll">
             {{ merging ? $t('common.merging') : $t('common.startMerge') }}
           </el-button>
         </div>
@@ -88,19 +104,21 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useFileStore } from '@/stores/fileStore'
 import { storeToRefs } from 'pinia'
 import { useAuthCheck } from '@/composables/useAuthCheck'
 import { handleDragDropEvent, VIDEO_EXTENSIONS } from '@/utils/dragDropUtils'
 import TopToolbar from '@/components/TopToolbar.vue'
 import FileDropZone from '@/components/FileDropZone.vue'
+import SelectionToolbar from '@/components/SelectionToolbar.vue'
 import SettingsDialog from '@/components/SettingsDialog.vue'
 import QRUploadDialog from '@/components/QRUploadDialog.vue'
 import M3U8Dialog from '@/components/M3U8Dialog.vue'
 import AuthCodeDialog from '@/components/AuthCodeDialog.vue'
 import { useI18n } from 'vue-i18n'
 import { getWebVideoMeta } from '@/utils/webMediaMeta'
+import { useSelectableFiles } from '@/composables/useSelectableFiles'
 
 const { t } = useI18n()
 import { platformService } from '@/services/platformService'
@@ -121,6 +139,19 @@ const progress = ref(0)
 const mergeStatus = ref('')
 const isDragging = ref(false)
 const isProcessingDrop = ref(false)
+const {
+  selectedFileIds,
+  selectableFiles,
+  selectedFiles,
+  selectedReadyFiles,
+  allSelectableSelected,
+  someSelectableSelected,
+  setFileSelected,
+  toggleSelectAll,
+  clearSelection,
+  removeSelection,
+} = useSelectableFiles(files)
+const mergeActionDisabled = computed(() => selectedReadyFiles.value.length < 2 || merging.value)
 
 const videoExtensions = ['mp4', 'avi', 'mkv', 'mov', 'flv', 'wmv', 'webm', '3gp', 'ts', 'm2ts']
 
@@ -232,8 +263,8 @@ const addFilesToList = async (selectedFiles: any[]) => {
 
 const handleFilesSelected = addFilesToList
 
-const clearFiles = () => { files.value = []; mergeStatus.value = '' }
-const deleteFile = (file: any) => { files.value = files.value.filter(f => f.id !== file.id) }
+const clearFiles = () => { files.value = []; mergeStatus.value = ''; clearSelection() }
+const deleteFile = (file: any) => { files.value = files.value.filter(f => f.id !== file.id); removeSelection(file) }
 const moveUp = (index: number) => { if (index > 0) { const temp = files.value[index]; files.value[index] = files.value[index - 1]; files.value[index - 1] = temp } }
 const moveDown = (index: number) => { if (index < files.value.length - 1) { const temp = files.value[index]; files.value[index] = files.value[index + 1]; files.value[index + 1] = temp } }
 const playVideo = async (file: any) => { if (file.path) await platformService.playVideo(file.path) }
@@ -245,25 +276,28 @@ const selectOutputDir = async () => {
   else if (outputPathType.value === 'custom') outputPathType.value = 'default'
 }
 
-const getOutputPath = () => {
+const getOutputPath = (targetFiles = selectedReadyFiles.value) => {
   if (!platformService.isElectron) return `${outputName.value}.${outputFormat.value}`
-  if (outputPathType.value === 'source' && files.value.length > 0) return platformService.join(platformService.dirname(files.value[0].path), `${outputName.value}.${outputFormat.value}`)
+  if (outputPathType.value === 'source' && targetFiles.length > 0) return platformService.join(platformService.dirname(targetFiles[0].path), `${outputName.value}.${outputFormat.value}`)
   return platformService.join(outputDir.value, `${outputName.value}.${outputFormat.value}`)
 }
 
 const mergeAll = async () => {
+  if (mergeActionDisabled.value) return
   await checkAuthAndExecute(async () => {
-    if (files.value.length < 2) return
+    const targetFiles = [...selectedReadyFiles.value]
+    if (targetFiles.length < 2) return
     merging.value = true; progress.value = 0; mergeStatus.value = ''
     try {
       await platformService.convertVideo({ 
         id: `merge-${Date.now()}`, 
-        inputPaths: files.value.map(f => f.path), 
-        outputPath: getOutputPath(), 
+        inputPaths: targetFiles.map(f => f.path),
+        outputPath: getOutputPath(targetFiles),
         format: outputFormat.value,
         type: 'merge'
       })
       mergeStatus.value = 'completed'; progress.value = 100
+      clearSelection()
     } catch (err) { mergeStatus.value = 'error'; console.error('合并失败:', err) }
     finally { merging.value = false }
   })
@@ -288,6 +322,24 @@ const handleURLDownloaded = (filePath: string) => { handleFilesSelected([filePat
 .merge-item {
   display: flex; align-items: center; gap: 16px; padding: 16px;
   background: #fff; border-radius: 12px; margin-bottom: 12px; border: 1px solid #f0f0f0;
+
+  .selection-cell {
+    width: 28px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    :deep(.el-checkbox__inner) {
+      border-radius: 5px;
+      border-color: #9bd8d1;
+    }
+
+    :deep(.el-checkbox__input.is-checked .el-checkbox__inner) {
+      background: #36d1c4;
+      border-color: #36d1c4;
+    }
+  }
 
   .thumbnail {
     width: 120px; height: 80px; background: #e8f8f6; border-radius: 8px;

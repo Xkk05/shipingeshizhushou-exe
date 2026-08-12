@@ -5,8 +5,24 @@
     <div class="content-area">
       <FileDropZone v-if="!files.length" @files-selected="onFilesFromDropZone" />
       <div v-else class="file-list-wrapper">
+        <SelectionToolbar
+          :all-selected="allSelectableSelected"
+          :some-selected="someSelectableSelected"
+          :disabled="!selectableFiles.length"
+          :selected-count="selectedFiles.length"
+          :ready-count="selectedReadyFiles.length"
+          @toggle-all="toggleSelectAll"
+        />
         <div class="file-list">
           <div v-for="file in files" :key="file.id" class="extract-item" :class="{ converting: file.status === 'converting', completed: file.status === 'completed', error: file.status === 'error' }">
+            <div class="selection-cell" @click.stop>
+              <el-checkbox
+                :model-value="selectedFileIds.includes(file.id)"
+                :disabled="file.status === 'converting'"
+                :aria-label="`${$t('common.selectFile')} ${file.name}`"
+                @change="setFileSelected(file, Boolean($event))"
+              />
+            </div>
             <div class="thumbnail" @click="playVideo(file)">
               <img v-if="file.thumbnail" :src="file.thumbnail" alt="" />
               <div v-else class="video-icon"><svg viewBox="0 0 24 24" width="30" height="30" fill="#36d1c4"><path d="M8 5v14l11-7z"/></svg></div>
@@ -62,7 +78,7 @@
             <svg viewBox="0 0 24 24" width="12" height="12" fill="#36d1c4"><path d="M7 10l5 5 5-5z"/></svg>
           </div>
         </div>
-        <div class="action-area"><el-button type="primary" class="action-btn" @click="extractAll">{{ $t('common.extractAll') }}</el-button></div>
+        <div class="action-area"><el-button type="primary" class="action-btn" :disabled="batchActionDisabled" @click="extractAll">{{ $t('common.extractAll') }}</el-button></div>
       </div>
       <div v-if="platformService.isElectron" class="path-row">
         <div class="output-path">
@@ -92,6 +108,7 @@ import { useAuthCheck } from '@/composables/useAuthCheck'
 import { handleDragDropEvent, VIDEO_EXTENSIONS } from '@/utils/dragDropUtils'
 import TopToolbar from '@/components/TopToolbar.vue'
 import FileDropZone from '@/components/FileDropZone.vue'
+import SelectionToolbar from '@/components/SelectionToolbar.vue'
 import SettingsDialog from '@/components/SettingsDialog.vue'
 import QRUploadDialog from '@/components/QRUploadDialog.vue'
 import M3U8Dialog from '@/components/M3U8Dialog.vue'
@@ -99,6 +116,7 @@ import AuthCodeDialog from '@/components/AuthCodeDialog.vue'
 import { platformService } from '@/services/platformService'
 import { getWebVideoMeta } from '@/utils/webMediaMeta'
 import { useI18n } from 'vue-i18n'
+import { useSelectableFiles } from '@/composables/useSelectableFiles'
 
 const { t } = useI18n()
 
@@ -127,6 +145,19 @@ const defaultAudioSettings = {
   audioBitrate: 'auto',
 }
 const batchAudioSettings = ref({ ...defaultAudioSettings })
+const {
+  selectedFileIds,
+  selectableFiles,
+  selectedFiles,
+  selectedReadyFiles,
+  batchActionDisabled,
+  allSelectableSelected,
+  someSelectableSelected,
+  setFileSelected,
+  toggleSelectAll,
+  clearSelection,
+  removeSelection,
+} = useSelectableFiles(files)
 
 const videoExtensions = ['mp4', 'avi', 'mkv', 'mov', 'flv', 'wmv', 'webm', '3gp', 'ts', 'm2ts']
 
@@ -305,8 +336,8 @@ const handleSettingsConfirm = (data: { format: string; settings: any }) => {
   }
 }
 
-const clearFiles = () => { files.value = [] }
-const deleteFile = (file: any) => { files.value = files.value.filter(f => f.id !== file.id) }
+const clearFiles = () => { files.value = []; clearSelection() }
+const deleteFile = (file: any) => { files.value = files.value.filter(f => f.id !== file.id); removeSelection(file) }
 
 const handlePathTypeChange = (type: string) => {
   if (type === 'custom') selectOutputDir()
@@ -349,8 +380,9 @@ const extractAudio = async (file: any, showDialog = true) => {
 }
 
 const extractAll = async () => {
+  if (batchActionDisabled.value) return
   await checkAuthAndExecute(async () => {
-    const pendingFiles = files.value.filter(f => f.status === 'pending' || f.status === 'error')
+    const pendingFiles = [...selectedReadyFiles.value]
     let completedCount = 0
     for (const file of pendingFiles) { 
       if (file.status === 'converting') continue
@@ -374,6 +406,7 @@ const extractAll = async () => {
         console.error('提取失败:', err) 
       }
     }
+    clearSelection()
   })
 }
 
@@ -393,6 +426,24 @@ const handleURLDownloaded = (filePath: string) => { handleFilesSelected([filePat
   &.converting { border-color: #36d1c4; background: #fafffe; }
   &.completed { border-color: #36d1c4; }
   &.error { border-color: #f56c6c; }
+
+  .selection-cell {
+    width: 28px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    :deep(.el-checkbox__inner) {
+      border-radius: 5px;
+      border-color: #9bd8d1;
+    }
+
+    :deep(.el-checkbox__input.is-checked .el-checkbox__inner) {
+      background: #36d1c4;
+      border-color: #36d1c4;
+    }
+  }
 
   .thumbnail {
     width: 120px; height: 80px; background: #e8f8f6; border-radius: 8px;

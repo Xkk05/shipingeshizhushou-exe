@@ -6,8 +6,24 @@
     <div class="content-area">
       <FileDropZone v-if="!files.length" @files-selected="onFilesFromDropZone" />
       <div v-else class="file-list-wrapper">
+        <SelectionToolbar
+          :all-selected="allSelectableSelected"
+          :some-selected="someSelectableSelected"
+          :disabled="!selectableFiles.length"
+          :selected-count="selectedFiles.length"
+          :ready-count="selectedReadyFiles.length"
+          @toggle-all="toggleSelectAll"
+        />
         <div class="file-list">
           <div v-for="file in files" :key="file.id" class="watermark-item">
+            <div class="selection-cell" @click.stop>
+              <el-checkbox
+                :model-value="selectedFileIds.includes(file.id)"
+                :disabled="file.status === 'converting'"
+                :aria-label="`${$t('common.selectFile')} ${file.name}`"
+                @change="setFileSelected(file, Boolean($event))"
+              />
+            </div>
             <div class="thumbnail" @click="playVideo(file)">
               <img v-if="file.thumbnail" :src="file.thumbnail" alt="" />
               <div v-else class="video-icon"><svg viewBox="0 0 24 24" width="30" height="30" fill="#36d1c4"><path d="M8 5v14l11-7z"/></svg></div>
@@ -70,7 +86,7 @@
       </div>
     </div>
 
-    <ActionBar :action-text="$t('common.processAll')" :current-format="outputFormat" @action="processAll" @show-settings="showSettingsDialog = true" @output-path-change="handleOutputPathChange" />
+    <ActionBar :action-text="$t('common.processAll')" :action-disabled="batchActionDisabled" :current-format="outputFormat" @action="processAll" @show-settings="showSettingsDialog = true" @output-path-change="handleOutputPathChange" />
     <SettingsDialog v-model="showSettingsDialog" type="video" @confirm="handleSettingsConfirm" @close="showSettingsDialog = false" />
 
     <!-- 添加水印弹窗 -->
@@ -248,6 +264,7 @@ import { useAuthCheck } from '@/composables/useAuthCheck'
 import { handleDragDropEvent, VIDEO_EXTENSIONS } from '@/utils/dragDropUtils'
 import TopToolbar from '@/components/TopToolbar.vue'
 import FileDropZone from '@/components/FileDropZone.vue'
+import SelectionToolbar from '@/components/SelectionToolbar.vue'
 import ActionBar from '@/components/ActionBar.vue'
 import SettingsDialog from '@/components/SettingsDialog.vue'
 import QRUploadDialog from '@/components/QRUploadDialog.vue'
@@ -255,6 +272,7 @@ import M3U8Dialog from '@/components/M3U8Dialog.vue'
 import AuthCodeDialog from '@/components/AuthCodeDialog.vue'
 import { platformService } from '@/services/platformService'
 import { getWebVideoMeta } from '@/utils/webMediaMeta'
+import { useSelectableFiles } from '@/composables/useSelectableFiles'
 
 const { t } = useI18n()
 
@@ -323,6 +341,22 @@ const drawCurrentY = ref(0)
 const drawingAreaStyle = ref<any>({})
 
 const videoExtensions = ['mp4', 'avi', 'mkv', 'mov', 'flv', 'wmv', 'webm', '3gp', 'ts', 'm2ts']
+const hasWatermarkAction = (file: any) => Boolean(file.removeAreas?.length || file.watermarks?.length)
+const {
+  selectedFileIds,
+  selectableFiles,
+  selectedFiles,
+  selectedReadyFiles,
+  batchActionDisabled,
+  allSelectableSelected,
+  someSelectableSelected,
+  setFileSelected,
+  toggleSelectAll,
+  clearSelection,
+  removeSelection,
+} = useSelectableFiles(files, {
+  isReady: file => file.status !== 'converting' && hasWatermarkAction(file),
+})
 
 onMounted(async () => {
   outputDir.value = await platformService.getDefaultOutputDir()
@@ -430,8 +464,8 @@ const addFilesToList = async (selectedFiles: any[]) => {
 
 const handleFilesSelected = addFilesToList
 
-const clearFiles = () => { files.value = [] }
-const deleteFile = (file: any) => { files.value = files.value.filter(f => f.id !== file.id) }
+const clearFiles = () => { files.value = []; clearSelection() }
+const deleteFile = (file: any) => { files.value = files.value.filter(f => f.id !== file.id); removeSelection(file) }
 const openSettings = () => { showSettingsDialog.value = true }
 const handleSettingsConfirm = (data: any) => {
   outputFormat.value = data.format.toLowerCase()
@@ -776,16 +810,9 @@ const processFile = async (file: any, showDialog = true) => {
 }
 
 const processAll = async () => {
+  if (batchActionDisabled.value) return
   await checkAuthAndExecute(async () => {
-    // 处理所有有水印设置的文件（包括已完成的，允许重新处理）
-    const filesToProcess = files.value.filter(f => {
-      // 排除正在处理的
-      if (f.status === 'converting') return false
-      // 必须有水印设置（添加或去除）
-      const hasRemoveAreas = f.removeAreas && f.removeAreas.length > 0
-      const hasWatermarks = f.watermarks && f.watermarks.length > 0
-      return hasRemoveAreas || hasWatermarks
-    })
+    const filesToProcess = [...selectedReadyFiles.value]
     
     let completedCount = 0
     for (const file of filesToProcess) {
@@ -843,6 +870,7 @@ const processAll = async () => {
       // 没有可处理的文件，提示用户
       console.log(t('common.noFilesToProcess'))
     }
+    clearSelection()
   })
 }
 
@@ -858,6 +886,23 @@ const handleURLDownloaded = (filePath: string) => { handleFilesSelected([filePat
 
 .watermark-item {
   display: flex; align-items: center; gap: 20px; padding: 16px 20px; background: #fff; border-radius: 8px; margin-bottom: 12px;
+  .selection-cell {
+    width: 28px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    :deep(.el-checkbox__inner) {
+      border-radius: 5px;
+      border-color: #9bd8d1;
+    }
+
+    :deep(.el-checkbox__input.is-checked .el-checkbox__inner) {
+      background: #36d1c4;
+      border-color: #36d1c4;
+    }
+  }
   .thumbnail { width: 140px; height: 90px; background: #000; border-radius: 6px; position: relative; overflow: hidden; cursor: pointer; flex-shrink: 0;
     img { height: 100%; width: auto; max-width: none; object-fit: contain; display: block; margin: 0 auto; }
     .video-icon { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background: #e8f8f6; }

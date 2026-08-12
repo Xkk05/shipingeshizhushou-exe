@@ -5,9 +5,28 @@
     <div class="content-area">
       <FileDropZone v-if="!files.length" @files-selected="onFilesFromDropZone" />
       <div v-else class="file-list-wrapper">
+        <SelectionToolbar
+          :all-selected="allSelectableSelected"
+          :some-selected="someSelectableSelected"
+          :disabled="!selectableFiles.length"
+          :selected-count="selectedFiles.length"
+          :ready-count="selectedReadyFiles.length"
+          @toggle-all="toggleSelectAll"
+        />
         <div class="file-list">
-          <FileListItem v-for="file in files" :key="file.id" :file="file" :action-text="$t('common.compress')"
-            @settings="openSettings()" @convert="compressFile(file)" @delete="deleteFile(file)" />
+          <FileListItem
+            v-for="file in files"
+            :key="file.id"
+            :file="file"
+            selectable
+            :selected="selectedFileIds.includes(file.id)"
+            :selection-disabled="file.status === 'converting'"
+            :action-text="$t('common.compress')"
+            @select-change="setFileSelected(file, $event)"
+            @settings="openSettings()"
+            @convert="compressFile(file)"
+            @delete="deleteFile(file)"
+          />
         </div>
         <div v-if="isDragging" class="drag-overlay">
           <div class="drag-hint">
@@ -33,7 +52,7 @@
           <span>{{ $t('common.batchSettings') }}</span>
         </div>
         <div class="action-area">
-          <el-button type="primary" class="action-btn" @click="compressAll">{{ $t('common.compressAll') }}</el-button>
+          <el-button type="primary" class="action-btn" :disabled="batchActionDisabled" @click="compressAll">{{ $t('common.compressAll') }}</el-button>
         </div>
       </div>
       <div v-if="platformService.isElectron" class="path-row">
@@ -101,6 +120,7 @@ import { handleDragDropEvent, VIDEO_EXTENSIONS } from '@/utils/dragDropUtils'
 import TopToolbar from '@/components/TopToolbar.vue'
 import FileDropZone from '@/components/FileDropZone.vue'
 import FileListItem from '@/components/FileListItem.vue'
+import SelectionToolbar from '@/components/SelectionToolbar.vue'
 import SettingsDialog from '@/components/SettingsDialog.vue'
 import QRUploadDialog from '@/components/QRUploadDialog.vue'
 import M3U8Dialog from '@/components/M3U8Dialog.vue'
@@ -108,6 +128,7 @@ import AuthCodeDialog from '@/components/AuthCodeDialog.vue'
 import { platformService } from '@/services/platformService'
 import { getWebVideoMeta } from '@/utils/webMediaMeta'
 import { useI18n } from 'vue-i18n'
+import { useSelectableFiles } from '@/composables/useSelectableFiles'
 
 const { t } = useI18n()
 
@@ -127,6 +148,19 @@ const isProcessingDrop = ref(false)
 
 const batchSettings = ref({ resolution: 'auto', width: 0, height: 0, videoBitrate: 'auto', frameRate: 'auto', audioBitrate: 'auto' })
 const videoExtensions = ['mp4', 'avi', 'mkv', 'mov', 'flv', 'wmv', 'webm', '3gp', 'ts', 'm2ts']
+const {
+  selectedFileIds,
+  selectableFiles,
+  selectedFiles,
+  selectedReadyFiles,
+  batchActionDisabled,
+  allSelectableSelected,
+  someSelectableSelected,
+  setFileSelected,
+  toggleSelectAll,
+  clearSelection,
+  removeSelection,
+} = useSelectableFiles(files)
 
 onMounted(async () => {
   outputDir.value = await platformService.getDefaultOutputDir()
@@ -239,8 +273,8 @@ const addFilesToList = async (selectedFiles: any[]) => {
 
 const handleFilesSelected = addFilesToList
 
-const clearFiles = () => { files.value = [] }
-const deleteFile = (file: any) => { files.value = files.value.filter(f => f.id !== file.id) }
+const clearFiles = () => { files.value = []; clearSelection() }
+const deleteFile = (file: any) => { files.value = files.value.filter(f => f.id !== file.id); removeSelection(file) }
 const openSettings = () => { showSettings.value = true }
 const outputResolutionFromSettings = (settings: any, fallback = '') => {
   if (settings?.width && settings?.height) return `${settings.width}x${settings.height}`
@@ -312,8 +346,9 @@ const compressFile = async (file: any, showDialog = true) => {
 }
 
 const compressAll = async () => {
+  if (batchActionDisabled.value) return
   await checkAuthAndExecute(async () => {
-    const pendingFiles = files.value.filter(f => f.status === 'pending' || f.status === 'error')
+    const pendingFiles = [...selectedReadyFiles.value]
     let completedCount = 0
     for (const file of pendingFiles) { 
       if (file.status === 'converting') continue
@@ -334,6 +369,7 @@ const compressAll = async () => {
         console.error('压缩失败:', err) 
       }
     }
+    clearSelection()
   })
 }
 
