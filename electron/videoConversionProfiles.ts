@@ -39,8 +39,8 @@ const muxerMap: Record<string, string> = {
   wmv: 'asf',
   asf: 'asf',
   f4v: 'f4v',
-  swf: 'flv',
-  ogv: 'webm',
+  swf: 'swf',
+  ogv: 'ogg',
   mpg: 'mpeg',
   ts: 'mpegts',
   m2ts: 'mpegts',
@@ -69,7 +69,7 @@ const strictProfiles: Record<string, StrictProfile> = {
   asf: { muxer: 'asf', videoCodec: 'wmv2', audioCodec: 'wmav2', maxFrameRate: 30 },
   flv: { muxer: 'flv', videoCodec: 'libx264', audioCodec: 'aac', sampleRate: 44100, audioChannels: 2, maxFrameRate: 30, outputOptions: [...yuv420p, '-flvflags', 'add_keyframe_index'] },
   f4v: { muxer: 'f4v', videoCodec: 'libx264', audioCodec: 'aac', sampleRate: 44100, audioChannels: 2, maxFrameRate: 30, outputOptions: yuv420p },
-  swf: { muxer: 'flv', videoCodec: 'libx264', audioCodec: 'aac', sampleRate: 44100, audioChannels: 2, maxFrameRate: 30, outputOptions: [...yuv420p, '-flvflags', 'add_keyframe_index'] },
+  swf: { muxer: 'swf', videoCodec: 'flv', audioCodec: 'libmp3lame', sampleRate: 44100, audioChannels: 2, maxFrameRate: 30, maxVideoBitrate: 1200, maxAudioBitrate: 128, outputOptions: yuv420p },
   mp4: { muxer: 'mp4', videoCodec: 'libx264', audioCodec: 'aac', outputOptions: [...yuv420p, '-movflags', '+faststart'] },
   m4v: { muxer: 'mp4', videoCodec: 'libx264', audioCodec: 'aac', outputOptions: [...yuv420p, '-movflags', '+faststart'] },
   mkv: { muxer: 'matroska', videoCodec: 'libx264', audioCodec: 'aac', outputOptions: yuv420p },
@@ -83,7 +83,8 @@ const strictProfiles: Record<string, StrictProfile> = {
   m2ts: { muxer: 'mpegts', videoCodec: 'libx264', audioCodec: 'aac', outputOptions: yuv420p },
   mts: { muxer: 'mpegts', videoCodec: 'libx264', audioCodec: 'aac', outputOptions: yuv420p },
   m2t: { muxer: 'mpegts', videoCodec: 'libx264', audioCodec: 'aac', outputOptions: yuv420p },
-  ogv: { muxer: 'webm', videoCodec: 'libvpx', audioCodec: 'libvorbis', sampleRate: 44100, audioChannels: 2, maxFrameRate: 30, maxVideoBitrate: 1600, maxAudioBitrate: 128, outputOptions: yuv420p },
+  wtv: { muxer: 'wtv', videoCodec: 'mpeg2video', audioCodec: 'mp2', sampleRate: 48000, audioChannels: 2, maxFrameRate: 30, outputOptions: yuv420p },
+  ogv: { muxer: 'ogg', videoCodec: 'libvpx', audioCodec: 'libvorbis', sampleRate: 44100, audioChannels: 2, maxFrameRate: 30, maxVideoBitrate: 1600, maxAudioBitrate: 128, outputOptions: yuv420p },
 }
 
 export const outputExtensionFromPath = (outputPath: string, fallbackFormat = 'mp4') => {

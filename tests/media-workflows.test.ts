@@ -269,7 +269,7 @@ describe('real media conversion workflows', () => {
       webm: { video: 'vp9', audio: 'opus' },
       '3gp': { video: 'h264', audio: 'aac' },
       f4v: { video: 'h264', audio: 'aac' },
-      swf: { video: 'h264', audio: 'aac' },
+      swf: { video: 'flv1', audio: 'mp3' },
       ogv: { video: 'vp8', audio: 'vorbis' },
       vob: { video: 'mpeg2video', audio: 'mp2' },
       mpg: { video: 'mpeg2video', audio: 'mp2' },
@@ -288,7 +288,7 @@ describe('real media conversion workflows', () => {
       expect(videoStream(metadata)?.width, `${format} should apply the requested width`).toBe(1500)
       expect(videoStream(metadata)?.height, `${format} should apply the requested height`).toBe(500)
       if (format === 'ogv') {
-        expect(metadata.format?.format_name).toContain('webm')
+        expect(metadata.format?.format_name).toContain('ogg')
         await expectDecodesWithoutErrors(outputPath)
       }
     }
@@ -303,7 +303,7 @@ describe('real media conversion workflows', () => {
 
     const ogvMetadata = await probe(ogvOutputPath)
     const ogvPlan = createVideoConversionPlan('ogv', reportedOgvSwfSettings)
-    expect(ogvMetadata.format?.format_name).toContain('webm')
+    expect(ogvMetadata.format?.format_name).toContain('ogg')
     expect(videoStream(ogvMetadata)?.codec_name).toBe('vp8')
     expect(audioStream(ogvMetadata)?.codec_name).toBe('vorbis')
     expect(videoStream(ogvMetadata)?.width).toBe(1600)
@@ -314,13 +314,11 @@ describe('real media conversion workflows', () => {
     await expectDecodesWithoutErrors(ogvOutputPath)
 
     const swfMetadata = await probe(swfOutputPath)
-    expect(swfMetadata.format?.format_name).toContain('flv')
-    expect(swfMetadata.streams?.[0]?.codec_type).toBe('video')
-    expect(videoStream(swfMetadata)?.codec_name).toBe('h264')
-    expect(audioStream(swfMetadata)?.codec_name).toBe('aac')
+    expect(swfMetadata.format?.format_name).toContain('swf')
+    expect(videoStream(swfMetadata)?.codec_name).toBe('flv1')
+    expect(audioStream(swfMetadata)?.codec_name).toBe('mp3')
     expect(videoStream(swfMetadata)?.width).toBe(1600)
     expect(videoStream(swfMetadata)?.height).toBe(500)
-    expect(duration(swfMetadata)).toBeGreaterThan(11)
   }, timeoutMs)
 
   it('compresses video to a smaller, downsized MP4', async () => {

@@ -8,8 +8,6 @@ import { v4 as uuidv4 } from 'uuid'
 import {
   createVideoConversionPlan,
   outputExtensionFromPath,
-  outputFormatFromPath,
-  outputSizeFromSettings,
   type VideoConversionSettings,
 } from './videoConversionProfiles'
 import {
@@ -205,14 +203,44 @@ function configureFFmpeg() {
   ffmpegConfigured = true
 }
 
-const applyCompressionCodecs = (command: ffmpeg.FfmpegCommand, ext: string) => {
-  if (ext === 'webm') return command.videoCodec('libvpx-vp9').audioCodec('libopus')
-  if (ext === 'avi') return command.videoCodec('mpeg4').audioCodec('libmp3lame')
-  if (ext === 'wmv') return command.videoCodec('wmv2').audioCodec('wmav2')
-  if (ext === 'swf') return command.videoCodec('libx264').audioCodec('aac')
-  if (ext === 'mpg' || ext === 'mpeg' || ext === 'vob') return command.videoCodec('mpeg2video').audioCodec('mp2')
-  if (ext === 'ogv') return command.videoCodec('libvpx').audioCodec('libvorbis')
-  return command.videoCodec('libx264').audioCodec('aac')
+const applyVideoConversionPlan = (
+  command: ffmpeg.FfmpegCommand,
+  plan: ReturnType<typeof createVideoConversionPlan>,
+  extraOutputOptions: string[] = [],
+  options: { skipOutputSize?: boolean } = {},
+) => {
+  let nextCommand = command.videoCodec(plan.videoCodec).audioCodec(plan.audioCodec)
+
+  if (plan.outputSize && !options.skipOutputSize) nextCommand = nextCommand.size(plan.outputSize)
+  if (plan.frameRate) nextCommand = nextCommand.fps(plan.frameRate)
+  if (plan.videoBitrate) nextCommand = nextCommand.videoBitrate(`${plan.videoBitrate}k`)
+  if (plan.audioBitrate) nextCommand = nextCommand.audioBitrate(`${plan.audioBitrate}k`)
+  if (plan.sampleRate) nextCommand = nextCommand.audioFrequency(plan.sampleRate)
+  if (plan.audioChannels) nextCommand = nextCommand.audioChannels(plan.audioChannels)
+
+  const outputOptions = [...plan.outputOptions, ...extraOutputOptions]
+  if (outputOptions.length > 0) nextCommand = nextCommand.outputOptions(outputOptions)
+
+  return nextCommand.toFormat(plan.muxer)
+}
+
+const appendScaleToComplexOutput = (filters: string[], outputSize: string) => {
+  const size = outputSize.match(/^(\d+)x(\d+)$/)
+  if (!size || filters.length === 0) return filters
+
+  const scaledFilters = [...filters]
+  const lastIndex = scaledFilters.length - 1
+  if (!/\[out\]\s*$/.test(scaledFilters[lastIndex])) return filters
+
+  scaledFilters[lastIndex] = scaledFilters[lastIndex].replace(/\[out\]\s*$/, '[preout]')
+  scaledFilters.push(`[preout]scale=${size[1]}:${size[2]}[out]`)
+
+  return scaledFilters
+}
+
+const scaleFilterFromOutputSize = (outputSize: string) => {
+  const size = outputSize.match(/^(\d+)x(\d+)$/)
+  return size ? `scale=${size[1]}:${size[2]}` : ''
 }
 
 let mainWindow: BrowserWindow | null = null
@@ -1064,24 +1092,18 @@ ipcMain.handle('merge-videos', async (_, options: {
     const concatList = tempFiles.map(f => f.replace(/\\/g, '/')).join('|')
     
     await new Promise<void>((resolve, reject) => {
-      const command = ffmpeg()
+      const conversionPlan = createVideoConversionPlan(format || outputExtensionFromPath(outputPath, 'mp4'))
+      const command = applyVideoConversionPlan(
+        ffmpeg()
         .input(`concat:${concatList}`)
-        .inputOptions(['-f', 'mpegts'])
-        .videoCodec('copy')  // 直接复制，不重新编码
-        .audioCodec('copy')
+        .inputOptions(['-f', 'mpegts']),
+        conversionPlan,
+        conversionPlan.videoCodec === 'libx264' ? ['-preset', 'veryfast', '-crf', '23'] : [],
+      )
       
       convertTasks.set(id, command)
       
-      // 格式映射
-      const formatMap: Record<string, string> = {
-        'wmv': 'asf',
-        'm4v': 'mp4',
-        'mkv': 'matroska'
-      }
-      const outputFormat = formatMap[format.toLowerCase()] || format.toLowerCase()
-      
       command
-        .toFormat(outputFormat)
         .on('start', (cmd: string) => {
           console.log('FFmpeg merge command:', cmd)
         })
@@ -1162,48 +1184,41 @@ ipcMain.handle('compress-video', async (_, options: {
   const explicitVideoBitrate = videoBitrate && videoBitrate !== 'auto' ? Number(videoBitrate) : 0
   const targetVideoBitrate = explicitVideoBitrate || (sourceInfo.bitrateKbps > 0 ? Math.max(350, Math.floor(sourceInfo.bitrateKbps * (bitrateRatioMap[modeKey] || 0.6))) : 0)
   const outputExt = outputExtensionFromPath(outputPath, format || 'mp4')
-  const outputFormat = outputFormatFromPath(outputPath, format || 'mp4')
-  const outputSize = outputSizeFromSettings({ resolution, width, height })
 
   const runCompression = (aggressive = false) => new Promise<{ outputSize: number }>((resolve, reject) => {
-    let command = applyCompressionCodecs(ffmpeg(inputPath), outputExt)
-
     const crf = aggressive ? Math.max((crfMap[modeKey] || 28) + 6, 34) : (crfMap[modeKey] || 28)
     const preset = aggressive ? 'veryfast' : (presetMap[modeKey] || 'medium')
     const bitrateBase = targetVideoBitrate || (sourceInfo.bitrateKbps > 0 ? Math.floor(sourceInfo.bitrateKbps * 0.45) : 0)
     const attemptVideoBitrate = aggressive && bitrateBase > 0 ? Math.max(180, Math.floor(bitrateBase * 0.55)) : targetVideoBitrate
-    const attemptAudioBitrate = aggressive ? '64k' : (audioBitrate && audioBitrate !== 'auto' ? `${audioBitrate}k` : '128k')
-    const h264LikeFormats = new Set(['mp4', 'm4v', 'mkv', 'mov', 'flv', 'f4v', 'swf', '3gp', 'ts', 'm2ts', 'mts', 'm2t'])
-    const outputOptions = ['-pix_fmt', 'yuv420p']
-    if (h264LikeFormats.has(outputExt)) {
+    const attemptAudioBitrate = aggressive ? '64' : (audioBitrate && audioBitrate !== 'auto' ? audioBitrate : '128')
+    const conversionPlan = createVideoConversionPlan(outputExt, {
+      resolution,
+      width,
+      height,
+      frameRate,
+      videoBitrate: attemptVideoBitrate > 0 ? String(attemptVideoBitrate) : undefined,
+      audioBitrate: attemptAudioBitrate,
+    })
+    const outputOptions: string[] = []
+
+    if (conversionPlan.videoCodec === 'libx264') {
       outputOptions.push('-preset', preset, '-crf', String(crf))
-    } else if (outputExt === 'webm') {
+    } else if (conversionPlan.videoCodec === 'libvpx-vp9' || conversionPlan.videoCodec === 'libvpx') {
       outputOptions.push('-crf', String(crf))
     }
-    if (['mp4', 'm4v', 'mov', 'f4v', '3gp'].includes(outputExt)) {
-      outputOptions.push('-movflags', '+faststart')
-    }
-    if (outputExt === 'flv' || outputExt === 'swf') {
-      outputOptions.push('-flvflags', 'add_keyframe_index')
-    }
-    if (outputExt === 'ogv') {
-      outputOptions.push('-max_muxing_queue_size', '4096')
+
+    if (conversionPlan.videoBitrate) {
+      const boundedBitrate = Number(conversionPlan.videoBitrate)
+      if (Number.isFinite(boundedBitrate) && boundedBitrate > 0) {
+        outputOptions.push('-maxrate', `${boundedBitrate}k`, '-bufsize', `${boundedBitrate * 2}k`)
+      }
     }
 
-    if (attemptVideoBitrate > 0) {
-      command = command.videoBitrate(`${attemptVideoBitrate}k`)
-      outputOptions.push('-maxrate', `${attemptVideoBitrate}k`, '-bufsize', `${attemptVideoBitrate * 2}k`)
-    }
-
-    command = command.outputOptions(outputOptions)
-    if (outputSize) command = command.size(outputSize)
-    if (frameRate && frameRate !== 'auto') command = command.fps(Number(frameRate))
-    command = command.audioBitrate(attemptAudioBitrate)
+    let command = applyVideoConversionPlan(ffmpeg(inputPath), conversionPlan, outputOptions)
 
     convertTasks.set(id, command)
 
     command
-      .toFormat(outputFormat)
       .on('start', (cmd: string) => console.log(aggressive ? 'Compress retry command:' : 'Compress command:', cmd))
       .on('progress', (progress: { percent?: number }) => {
         const percent = aggressive ? 50 + ((progress.percent || 0) / 2) : Math.min(progress.percent || 0, 50)
@@ -1278,9 +1293,10 @@ ipcMain.handle('video-to-gif', async (_, options: {
   width?: number
   startTime?: number
   duration?: number
+  speed?: number
 }) => {
   configureFFmpeg()
-  const { id, inputPath, outputPath, fps = 10, width = 480, startTime, duration } = options
+  const { id, inputPath, outputPath, fps = 10, width = 480, startTime, duration, speed = 1 } = options
   const fs = require('fs')
   
   const outputDir = path.dirname(outputPath)
@@ -1293,10 +1309,15 @@ ipcMain.handle('video-to-gif', async (_, options: {
     
     if (startTime !== undefined) command = command.setStartTime(startTime)
     if (duration !== undefined) command = command.setDuration(duration)
-    
-    command = command.outputOptions([
-      `-vf scale=${width}:-1:flags=lanczos,fps=${fps}`,
-    ])
+
+    const speedValue = Number.isFinite(Number(speed)) && Number(speed) > 0 ? Number(speed) : 1
+    const filters = [
+      `scale=${width}:-1:flags=lanczos`,
+      `fps=${fps}`,
+      ...(Math.abs(speedValue - 1) > 0.001 ? [`setpts=${(1 / speedValue).toFixed(6)}*PTS`] : []),
+    ]
+
+    command = command.outputOptions([`-vf ${filters.join(',')}`])
     
     convertTasks.set(id, command)
     
@@ -1317,11 +1338,6 @@ ipcMain.handle('video-to-gif', async (_, options: {
       .save(outputPath)
   })
 })
-
-const applyWatermarkOutputSettings = (command: ffmpeg.FfmpegCommand, settings?: { resolution?: string; width?: number; height?: number }) => {
-  const outputSize = outputSizeFromSettings(settings)
-  return outputSize ? command.size(outputSize) : command
-}
 
 // 视频添加水印
 ipcMain.handle('add-watermark', async (_, options: {
@@ -1423,9 +1439,11 @@ ipcMain.handle('add-watermark', async (_, options: {
 
     return checkFontExists(defaultFontPaths) || 'C:\\Windows\\Fonts\\arial.ttf'
   }
+  const conversionPlan = createVideoConversionPlan(outputExtensionFromPath(outputPath, 'mp4'), settings)
   
   return new Promise((resolve, reject) => {
     let command = ffmpeg(inputPath)
+    let outputSizeHandledInFilters = false
     
     if (watermarks && watermarks.length > 0) {
       const { filters, imagePaths } = buildWatermarkFilters(watermarks, getSystemFontPath)
@@ -1434,19 +1452,22 @@ ipcMain.handle('add-watermark', async (_, options: {
       })
 
       if (filters.length > 0) {
-        command = command.complexFilter(filters)
+        const outputFilters = appendScaleToComplexOutput(filters, conversionPlan.outputSize)
+        outputSizeHandledInFilters = outputFilters !== filters
+        command = command.complexFilter(outputFilters)
         command = command.outputOptions(['-map [out]', '-map 0:a?'])
       }
     }
     
+    command = applyVideoConversionPlan(
+      command,
+      conversionPlan,
+      [],
+      { skipOutputSize: outputSizeHandledInFilters },
+    )
     convertTasks.set(id, command)
-    
-    command = applyWatermarkOutputSettings(command, settings)
 
     command
-      .videoCodec('libx264')
-      .audioCodec('copy')
-      .toFormat(outputFormatFromPath(outputPath))
       .on('start', (cmd: string) => console.log('Watermark command:', cmd))
       .on('progress', (progress: { percent?: number }) => {
         mainWindow?.webContents.send('watermark-progress', { id, percent: progress.percent || 0 })
@@ -1506,9 +1527,11 @@ ipcMain.handle('remove-watermark', async (_, options: {
       })
     })
   })
+  const conversionPlan = createVideoConversionPlan(outputExtensionFromPath(outputPath, 'mp4'), settings)
   
   return new Promise((resolve, reject) => {
     let command = ffmpeg(inputPath)
+    let outputSizeHandledInFilters = false
     
     if (areas && areas.length > 0) {
       // 构建滤镜字符串
@@ -1522,13 +1545,14 @@ ipcMain.handle('remove-watermark', async (_, options: {
           const y = Math.max(0, Math.min(Math.round(area.y), videoInfo.height - 10))
           const w = Math.max(10, Math.min(Math.round(area.width), videoInfo.width - x))
           const h = Math.max(10, Math.min(Math.round(area.height), videoInfo.height - y))
+          const blurRadius = Math.max(1, Math.min(8, Math.floor(Math.min(w, h) / 4)))
           
           if (idx === 0) {
             // 第一个区域：从原视频裁剪区域，模糊后叠加回去
-            filterStr = `[0:v]crop=${w}:${h}:${x}:${y},boxblur=10:10[blur0];[0:v][blur0]overlay=${x}:${y}[v0]`
+            filterStr = `[0:v]crop=${w}:${h}:${x}:${y},boxblur=${blurRadius}:2[blur0];[0:v][blur0]overlay=${x}:${y}[v0]`
           } else {
             // 后续区域：从上一个输出继续处理
-            filterStr += `;[v${idx-1}]crop=${w}:${h}:${x}:${y},boxblur=10:10[blur${idx}];[v${idx-1}][blur${idx}]overlay=${x}:${y}[v${idx}]`
+            filterStr += `;[v${idx-1}]crop=${w}:${h}:${x}:${y},boxblur=${blurRadius}:2[blur${idx}];[v${idx-1}][blur${idx}]overlay=${x}:${y}[v${idx}]`
           }
         })
         
@@ -1536,7 +1560,9 @@ ipcMain.handle('remove-watermark', async (_, options: {
         const lastIdx = areas.length - 1
         filterStr = filterStr.replace(`[v${lastIdx}]`, '[out]')
         
-        command = command.complexFilter(filterStr)
+        const outputFilters = appendScaleToComplexOutput([filterStr], conversionPlan.outputSize)
+        outputSizeHandledInFilters = outputFilters.length > 1
+        command = command.complexFilter(outputFilters)
         command = command.outputOptions(['-map [out]', '-map 0:a?'])
       } else {
         // 使用 drawbox 滤镜（纯色填充）
@@ -1552,18 +1578,25 @@ ipcMain.handle('remove-watermark', async (_, options: {
           filters.push(`drawbox=x=${x}:y=${y}:w=${w}:h=${h}:color=0x${color}:t=fill`)
         })
         
+        const scaleFilter = scaleFilterFromOutputSize(conversionPlan.outputSize)
+        if (scaleFilter) {
+          filters.push(scaleFilter)
+          outputSizeHandledInFilters = true
+        }
+
         command = command.videoFilters(filters)
       }
     }
     
+    command = applyVideoConversionPlan(
+      command,
+      conversionPlan,
+      [],
+      { skipOutputSize: outputSizeHandledInFilters },
+    )
     convertTasks.set(id, command)
-    
-    command = applyWatermarkOutputSettings(command, settings)
 
     command
-      .videoCodec('libx264')
-      .audioCodec('aac')
-      .toFormat(outputFormatFromPath(outputPath))
       .on('start', (cmd: string) => console.log('Remove watermark command:', cmd))
       .on('progress', (progress: { percent?: number }) => {
         mainWindow?.webContents.send('watermark-progress', { id, percent: progress.percent || 0 })
