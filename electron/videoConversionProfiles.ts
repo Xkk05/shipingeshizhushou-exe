@@ -30,6 +30,8 @@ type StrictProfile = {
   sampleRate?: number
   audioChannels?: number
   maxFrameRate?: number
+  maxVideoBitrate?: number
+  maxAudioBitrate?: number
   outputOptions?: string[]
 }
 
@@ -38,7 +40,7 @@ const muxerMap: Record<string, string> = {
   asf: 'asf',
   f4v: 'f4v',
   swf: 'flv',
-  ogv: 'ogg',
+  ogv: 'webm',
   mpg: 'mpeg',
   ts: 'mpegts',
   m2ts: 'mpegts',
@@ -81,7 +83,7 @@ const strictProfiles: Record<string, StrictProfile> = {
   m2ts: { muxer: 'mpegts', videoCodec: 'libx264', audioCodec: 'aac', outputOptions: yuv420p },
   mts: { muxer: 'mpegts', videoCodec: 'libx264', audioCodec: 'aac', outputOptions: yuv420p },
   m2t: { muxer: 'mpegts', videoCodec: 'libx264', audioCodec: 'aac', outputOptions: yuv420p },
-  ogv: { muxer: 'ogg', videoCodec: 'libtheora', audioCodec: 'libvorbis', sampleRate: 44100, audioChannels: 2, maxFrameRate: 30, outputOptions: ['-max_muxing_queue_size', '4096'] },
+  ogv: { muxer: 'webm', videoCodec: 'libvpx', audioCodec: 'libvorbis', sampleRate: 44100, audioChannels: 2, maxFrameRate: 30, maxVideoBitrate: 1600, maxAudioBitrate: 128, outputOptions: yuv420p },
 }
 
 export const outputExtensionFromPath = (outputPath: string, fallbackFormat = 'mp4') => {
@@ -120,10 +122,11 @@ const selectedAudioCodec = (codec?: string) => {
   return uiAudioCodecMap[codec] || codec
 }
 
-const selectedBitrate = (bitrate?: string) => {
+const selectedBitrate = (bitrate?: string, maxBitrate?: number) => {
   if (!bitrate || bitrate === 'auto') return undefined
   const numeric = Number(bitrate)
-  return Number.isFinite(numeric) && numeric > 0 ? String(Math.round(numeric)) : undefined
+  if (!Number.isFinite(numeric) || numeric <= 0) return undefined
+  return String(Math.round(maxBitrate ? Math.min(numeric, maxBitrate) : numeric))
 }
 
 const selectedSampleRate = (sampleRate?: string) => {
@@ -150,8 +153,8 @@ export const createVideoConversionPlan = (format: string, settings: VideoConvers
     audioCodec: profile?.audioCodec || selectedAudioCodec(settings.audioCodec),
     outputSize: outputSizeFromSettings(settings),
     frameRate: selectedFrameRate(settings.frameRate, profile?.maxFrameRate),
-    videoBitrate: selectedBitrate(settings.videoBitrate),
-    audioBitrate: selectedBitrate(settings.audioBitrate),
+    videoBitrate: selectedBitrate(settings.videoBitrate, profile?.maxVideoBitrate),
+    audioBitrate: selectedBitrate(settings.audioBitrate, profile?.maxAudioBitrate),
     sampleRate: profile?.sampleRate || selectedSampleRate(settings.sampleRate),
     audioChannels: profile?.audioChannels,
     outputOptions: [...(profile?.outputOptions || [])],

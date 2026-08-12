@@ -202,7 +202,7 @@ const applyCompressionCodecs = (command: ffmpeg.FfmpegCommand, ext: string) => {
   if (ext === 'wmv') return command.videoCodec('wmv2').audioCodec('wmav2')
   if (ext === 'swf') return command.videoCodec('libx264').audioCodec('aac')
   if (ext === 'mpg' || ext === 'mpeg' || ext === 'vob') return command.videoCodec('mpeg2video').audioCodec('mp2')
-  if (ext === 'ogv') return command.videoCodec('libtheora').audioCodec('libvorbis')
+  if (ext === 'ogv') return command.videoCodec('libvpx').audioCodec('libvorbis')
   return command.videoCodec('libx264').audioCodec('aac')
 }
 

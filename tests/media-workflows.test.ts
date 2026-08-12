@@ -45,6 +45,7 @@ const run = (file: string, args: string[]) =>
   })
 
 const runFfmpeg = (args: string[]) => run(ffmpegPath, ['-y', '-hide_banner', ...args])
+const nullOutput = process.platform === 'win32' ? 'NUL' : '/dev/null'
 
 ffmpeg.setFfmpegPath(ffmpegPath)
 ffmpeg.setFfprobePath(ffprobePath)
@@ -61,6 +62,22 @@ const probe = (filePath: string) =>
           return
         }
         resolve(JSON.parse(stdout) as ProbeData)
+      },
+    )
+  })
+
+const expectDecodesWithoutErrors = (filePath: string) =>
+  new Promise<void>((resolve, reject) => {
+    execFile(
+      ffmpegPath,
+      ['-v', 'error', '-i', filePath, '-f', 'null', nullOutput],
+      { windowsHide: true },
+      (error, _stdout, stderr) => {
+        if (error || stderr.trim()) {
+          reject(new Error(`decode failed: ${stderr || error?.message}`))
+          return
+        }
+        resolve()
       },
     )
   })
@@ -233,7 +250,7 @@ describe('real media conversion workflows', () => {
       '3gp': { video: 'h264', audio: 'aac' },
       f4v: { video: 'h264', audio: 'aac' },
       swf: { video: 'h264', audio: 'aac' },
-      ogv: { video: 'theora', audio: 'vorbis' },
+      ogv: { video: 'vp8', audio: 'vorbis' },
       vob: { video: 'mpeg2video', audio: 'mp2' },
       mpg: { video: 'mpeg2video', audio: 'mp2' },
       mpeg: { video: 'mpeg2video', audio: 'mp2' },
@@ -250,6 +267,10 @@ describe('real media conversion workflows', () => {
       expect(audioStream(metadata)?.codec_name, `${format} should keep an audio stream`).toBe(expected.audio)
       expect(videoStream(metadata)?.width, `${format} should apply the requested width`).toBe(1500)
       expect(videoStream(metadata)?.height, `${format} should apply the requested height`).toBe(500)
+      if (format === 'ogv') {
+        expect(metadata.format?.format_name).toContain('webm')
+        await expectDecodesWithoutErrors(outputPath)
+      }
     }
   }, timeoutMs)
 
@@ -261,12 +282,16 @@ describe('real media conversion workflows', () => {
     await runVideoConversionPlan(userLikeVerticalVideo, swfOutputPath, createVideoConversionPlan('swf', reportedOgvSwfSettings))
 
     const ogvMetadata = await probe(ogvOutputPath)
-    expect(ogvMetadata.format?.format_name).toContain('ogg')
-    expect(videoStream(ogvMetadata)?.codec_name).toBe('theora')
+    const ogvPlan = createVideoConversionPlan('ogv', reportedOgvSwfSettings)
+    expect(ogvMetadata.format?.format_name).toContain('webm')
+    expect(videoStream(ogvMetadata)?.codec_name).toBe('vp8')
     expect(audioStream(ogvMetadata)?.codec_name).toBe('vorbis')
     expect(videoStream(ogvMetadata)?.width).toBe(1600)
     expect(videoStream(ogvMetadata)?.height).toBe(500)
+    expect(ogvPlan.videoBitrate).toBe('1600')
+    expect(ogvPlan.audioBitrate).toBe('128')
     expect(duration(ogvMetadata)).toBeGreaterThan(11)
+    await expectDecodesWithoutErrors(ogvOutputPath)
 
     const swfMetadata = await probe(swfOutputPath)
     expect(swfMetadata.format?.format_name).toContain('flv')
