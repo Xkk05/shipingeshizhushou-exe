@@ -214,7 +214,22 @@
     "loginFailed": "登录失败",
     "loginCancelled": "登录已取消",
     "logoutSuccess": "已退出登录",
-    "logoutFailed": "退出登录失败"
+    "logoutFailed": "退出登录失败",
+    "clear": "\u6e05\u9664",
+    "downloadFailed": "\u4e0b\u8f7d\u5931\u8d25",
+    "duration": "\u65f6\u957f",
+    "networkError": "\u7f51\u7edc\u9519\u8bef",
+    "noClipsYet": "\u6682\u65e0\u7247\u6bb5",
+    "position": "\u4f4d\u7f6e",
+    "removeMode": "\u53bb\u9664\u6a21\u5f0f",
+    "size": "\u5927\u5c0f",
+    "loginManualTip": "\u5982\u679c\u6d4f\u89c8\u5668\u6ca1\u6709\u81ea\u52a8\u6253\u5f00\uff0c\u8bf7\u624b\u52a8\u7ee7\u7eed\uff1a",
+    "reopenLoginPage": "\u518d\u6b21\u6253\u5f00",
+    "copyLoginLink": "\u590d\u5236\u767b\u5f55\u94fe\u63a5",
+    "reopenBrowserSuccess": "\u5df2\u518d\u6b21\u5c1d\u8bd5\u6253\u5f00\u6d4f\u89c8\u5668",
+    "reopenBrowserFailed": "\u518d\u6b21\u6253\u5f00\u6d4f\u89c8\u5668\u5931\u8d25",
+    "loginLinkCopied": "\u767b\u5f55\u94fe\u63a5\u5df2\u590d\u5236",
+    "copyLoginLinkFailed": "\u590d\u5236\u767b\u5f55\u94fe\u63a5\u5931\u8d25"
   },
   "error": {
     "dragDropFailed": "处理拖拽失败",

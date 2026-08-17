@@ -96,7 +96,7 @@
       </div>
     </div>
 
-    <SettingsDialog v-model="showSettings" type="video" @confirm="handleSettingsConfirm" />
+    <SettingsDialog v-model="showSettings" type="video" format-scope="video" :initial-format="outputFormat" :initial-settings="mergeSettings" @confirm="handleSettingsConfirm" />
     <QRUploadDialog v-model="showQRUpload" @files-uploaded="handleFilesUploaded" />
     <M3U8Dialog v-model="showURLDialog" @download-complete="handleURLDownloaded" />
     <AuthCodeDialog v-model="showAuthDialog" @success="handleAuthSuccess" />
@@ -119,6 +119,7 @@ import AuthCodeDialog from '@/components/AuthCodeDialog.vue'
 import { useI18n } from 'vue-i18n'
 import { getWebVideoMeta } from '@/utils/webMediaMeta'
 import { useSelectableFiles } from '@/composables/useSelectableFiles'
+import { cloneOutputSettings } from '@/utils/outputSettings'
 
 const { t } = useI18n()
 import { platformService } from '@/services/platformService'
@@ -139,6 +140,18 @@ const progress = ref(0)
 const mergeStatus = ref('')
 const isDragging = ref(false)
 const isProcessingDrop = ref(false)
+const mergeSettings = ref<any>({
+  resolution: 'auto',
+  width: 0,
+  height: 0,
+  videoCodec: 'auto',
+  frameRate: 'auto',
+  videoBitrate: '2400',
+  audioCodec: 'auto',
+  channels: 'auto',
+  sampleRate: 'auto',
+  audioBitrate: 'auto',
+})
 const {
   selectedFileIds,
   selectableFiles,
@@ -294,6 +307,7 @@ const mergeAll = async () => {
         inputPaths: targetFiles.map(f => f.path),
         outputPath: getOutputPath(targetFiles),
         format: outputFormat.value,
+        settings: cloneOutputSettings(mergeSettings.value),
         type: 'merge'
       })
       mergeStatus.value = 'completed'; progress.value = 100
@@ -305,6 +319,7 @@ const mergeAll = async () => {
 
 const handleSettingsConfirm = (data: { format: string; settings: any }) => {
   outputFormat.value = data.format.toLowerCase()
+  mergeSettings.value = cloneOutputSettings(data.settings)
   // 重置合并状态，允许重新合并
   mergeStatus.value = ''
   progress.value = 0

@@ -66,7 +66,7 @@
                 <a class="link" @click="openAddWatermark(file)"><svg viewBox="0 0 24 24" width="14" height="14" fill="#36d1c4"><circle cx="12" cy="12" r="3"/></svg>{{ $t('common.addWatermark') }}</a>
               </div>
               <div class="action-btns">
-                <el-button class="setting-btn" size="small" circle @click="openSettings()">
+                <el-button class="setting-btn" size="small" circle @click="openSettings(file)">
                   <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
                 </el-button>
                 <el-button type="primary" size="small" class="process-btn" :disabled="file.status === 'converting'" @click="processFile(file)">
@@ -86,8 +86,16 @@
       </div>
     </div>
 
-    <ActionBar :action-text="$t('common.processAll')" :action-disabled="batchActionDisabled" :current-format="outputFormat" @action="processAll" @show-settings="showSettingsDialog = true" @output-path-change="handleOutputPathChange" />
-    <SettingsDialog v-model="showSettingsDialog" type="video" @confirm="handleSettingsConfirm" @close="showSettingsDialog = false" />
+    <ActionBar :action-text="$t('common.processAll')" :action-disabled="batchActionDisabled" :current-format="outputFormat" @action="processAll" @show-settings="openSettings()" @output-path-change="handleOutputPathChange" />
+    <SettingsDialog
+      v-model="showSettingsDialog"
+      type="video"
+      format-scope="video"
+      :initial-format="initialFormatForDialog"
+      :initial-settings="initialSettingsForDialog"
+      @confirm="handleSettingsConfirm"
+      @close="showSettingsDialog = false"
+    />
 
     <!-- 添加水印弹窗 -->
     <el-dialog v-model="showWatermarkDialog" :title="$t('common.addWatermark')" width="950px" :close-on-click-modal="false" class="watermark-dialog">
@@ -273,6 +281,12 @@ import AuthCodeDialog from '@/components/AuthCodeDialog.vue'
 import { platformService } from '@/services/platformService'
 import { getWebVideoMeta } from '@/utils/webMediaMeta'
 import { useSelectableFiles } from '@/composables/useSelectableFiles'
+import {
+  buildOutputName,
+  isFileOutputCustomized,
+  markFileOutputCustomized,
+  resetFileOutputStatus,
+} from '@/utils/outputSettings'
 
 const { t } = useI18n()
 
@@ -307,6 +321,9 @@ const defaultVideoSettings = {
   height: 0,
 }
 const watermarkSettings = ref<any>({ ...defaultVideoSettings })
+const currentEditingSettingsFile = ref<any>(null)
+const initialSettingsForDialog = ref<any>(watermarkSettings.value)
+const initialFormatForDialog = ref(outputFormat.value)
 const getPreviewSrc = (file: any) => {
   if (!file) return ''
   if (!platformService.isElectron && file.previewUrl) return file.previewUrl
@@ -376,7 +393,8 @@ onUnmounted(() => {
 const formatDuration = (seconds: number) => { const m = Math.floor(seconds / 60), s = Math.floor(seconds % 60); return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}` }
 const formatTime = (seconds: number) => { const h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60), s = Math.floor(seconds % 60); return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}` }
 const formatSize = (bytes: number) => { if (!bytes) return '0B'; const k = 1024, sizes = ['B', 'KB', 'MB', 'GB']; const i = Math.floor(Math.log(bytes) / Math.log(k)); return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + sizes[i] }
-const cloneSettings = (settings: any) => JSON.parse(JSON.stringify(settings || defaultVideoSettings))
+const clonePlain = <T,>(value: T): T => JSON.parse(JSON.stringify(value))
+const cloneSettings = (settings: any) => ({ ...defaultVideoSettings, ...clonePlain(settings || {}) })
 const resolveOutputResolution = (sourceResolution: string, settings: any) => {
   if (settings?.width && settings?.height) return `${settings.width}x${settings.height}`
   if (settings?.resolution && settings.resolution !== 'auto' && !String(settings.resolution).startsWith('custom')) return settings.resolution
@@ -435,7 +453,7 @@ const onFilesFromDropZone = (filePaths: string[]) => {
 }
 
 const startEditName = (file: any) => { file.isEditing = true; file.editingName = file.outputName; nextTick(() => { const input = document.querySelector('.edit-input .el-input__inner') as HTMLInputElement; if (input) { input.focus(); input.select() } }) }
-const confirmEditName = (file: any) => { if (file.editingName?.trim()) { let newName = file.editingName.trim(); if (!newName.toLowerCase().endsWith(`.${outputFormat.value}`)) newName = newName.replace(/\.[^.]+$/, '') + `.${outputFormat.value}`; file.outputName = newName }; file.isEditing = false }
+const confirmEditName = (file: any) => { if (file.editingName?.trim()) { const ext = file.outputFormat || outputFormat.value; let newName = file.editingName.trim(); if (!newName.toLowerCase().endsWith(`.${ext}`)) newName = newName.replace(/\.[^.]+$/, '') + `.${ext}`; file.outputName = newName }; file.isEditing = false }
 const cancelEditName = (file: any) => { file.isEditing = false }
 
 const addFiles = async () => { const selectedFiles = await platformService.selectFiles([{ name: t('common.videoFiles'), extensions: videoExtensions }]); if (selectedFiles?.length) addFilesToList(selectedFiles) }
@@ -458,7 +476,7 @@ const addFilesToList = async (selectedFiles: any[]) => {
       try { thumbnail = await platformService.getVideoThumbnail(filePath) } catch (e) {}
     }
     const sourceResolution = videoInfo.width && videoInfo.height ? `${videoInfo.width}x${videoInfo.height}` : ''
-    files.value.push({ id: fileId, name: fileName, path: filePath, previewUrl: browserFile ? URL.createObjectURL(browserFile) : '', format: platformService.extname(fileName).slice(1), outputName: fileName?.replace(/\.[^.]+$/, `_watermark.${outputFormat.value}`), outputFormat: outputFormat.value, resolution: sourceResolution, outputResolution: resolveOutputResolution(sourceResolution, watermarkSettings.value), settings: cloneSettings(watermarkSettings.value), duration: videoInfo.duration ? formatDuration(videoInfo.duration) : '00:00', durationSec: videoInfo.duration || 0, size: videoInfo.size, thumbnail, status: 'pending', progress: 0, watermarks: [], isEditing: false, editingName: '' })
+    files.value.push({ id: fileId, name: fileName, path: filePath, previewUrl: browserFile ? URL.createObjectURL(browserFile) : '', format: platformService.extname(fileName).slice(1), outputName: buildOutputName(fileName, '_watermark', outputFormat.value), outputFormat: outputFormat.value, resolution: sourceResolution, outputResolution: resolveOutputResolution(sourceResolution, watermarkSettings.value), settings: cloneSettings(watermarkSettings.value), hasCustomOutputSettings: false, duration: videoInfo.duration ? formatDuration(videoInfo.duration) : '00:00', durationSec: videoInfo.duration || 0, size: videoInfo.size, thumbnail, status: 'pending', progress: 0, watermarks: [], isEditing: false, editingName: '' })
   }
 }
 
@@ -466,25 +484,40 @@ const handleFilesSelected = addFilesToList
 
 const clearFiles = () => { files.value = []; clearSelection() }
 const deleteFile = (file: any) => { files.value = files.value.filter(f => f.id !== file.id); removeSelection(file) }
-const openSettings = () => { showSettingsDialog.value = true }
+const openSettings = (file?: any) => {
+  currentEditingSettingsFile.value = file || null
+  initialSettingsForDialog.value = file ? cloneSettings(file.settings || watermarkSettings.value) : cloneSettings(watermarkSettings.value)
+  initialFormatForDialog.value = file?.outputFormat || outputFormat.value
+  showSettingsDialog.value = true
+}
+const applyWatermarkOutputSettings = (file: any, format: string, settings: any, customized: boolean) => {
+  const nextFormat = format.toLowerCase()
+  const nextSettings = cloneSettings(settings)
+  file.outputFormat = nextFormat
+  file.outputName = buildOutputName(file.name, '_watermark', nextFormat)
+  file.settings = nextSettings
+  file.outputResolution = resolveOutputResolution(file.resolution, nextSettings)
+  markFileOutputCustomized(file, customized)
+  resetFileOutputStatus(file)
+}
 const handleSettingsConfirm = (data: any) => {
-  outputFormat.value = data.format.toLowerCase()
-  watermarkSettings.value = cloneSettings(data.settings)
-  // 更新文件格式并重置已完成文件的状态
+  const nextFormat = data.format.toLowerCase()
+  const nextSettings = cloneSettings(data.settings)
+
+  if (currentEditingSettingsFile.value) {
+    applyWatermarkOutputSettings(currentEditingSettingsFile.value, nextFormat, nextSettings, true)
+    return
+  }
+
+  outputFormat.value = nextFormat
+  watermarkSettings.value = nextSettings
   files.value.forEach(f => {
-    f.outputFormat = outputFormat.value
-    f.outputName = f.name?.replace(/\.[^.]+$/, `_watermark.${outputFormat.value}`)
-    f.settings = cloneSettings(watermarkSettings.value)
-    f.outputResolution = resolveOutputResolution(f.resolution, watermarkSettings.value)
-    if (f.status === 'completed' || f.status === 'error') {
-      f.status = 'pending'
-      f.progress = 0
-    }
+    if (!isFileOutputCustomized(f)) applyWatermarkOutputSettings(f, nextFormat, watermarkSettings.value, false)
   })
 }
 const handleOutputPathChange = (data: { type: string; path: string }) => { outputPathType.value = data.type; if (data.path) outputDir.value = data.path }
 
-const openAddWatermark = (file: any) => { currentFile.value = file; watermarkList.value = file.watermarks?.length ? [...file.watermarks] : []; selectedWatermark.value = watermarkList.value.length > 0 ? 0 : null; videoDuration.value = file.durationSec || 0; showWatermarkDialog.value = true }
+const openAddWatermark = (file: any) => { currentFile.value = file; watermarkList.value = file.watermarks?.length ? clonePlain(file.watermarks) : []; selectedWatermark.value = watermarkList.value.length > 0 ? 0 : null; videoDuration.value = file.durationSec || 0; showWatermarkDialog.value = true }
 const onVideoLoaded = () => { if (videoRef.value) { videoDuration.value = videoRef.value.duration; setTimeout(() => updateVideoSize(), 100) } }
 const updateVideoSize = () => { if (!videoRef.value || !videoContainerRef.value) return; const video = videoRef.value, container = videoContainerRef.value; const containerWidth = container.clientWidth, containerHeight = container.clientHeight, videoRatio = video.videoWidth / video.videoHeight, containerRatio = containerWidth / containerHeight; let displayWidth: number, displayHeight: number; if (videoRatio > containerRatio) { displayWidth = containerWidth; displayHeight = containerWidth / videoRatio } else { displayHeight = containerHeight; displayWidth = containerHeight * videoRatio }; videoSize.value = { width: displayWidth, height: displayHeight }; videoWrapperStyle.value = { width: displayWidth + 'px', height: displayHeight + 'px' } }
 const onTimeUpdate = () => { if (videoRef.value) currentTime.value = videoRef.value.currentTime }
@@ -534,7 +567,7 @@ const saveWatermark = () => {
     const scaleY = videoSize.value.height ? videoRef.value.videoHeight / videoSize.value.height : 1
     
     // 保存水印时，将坐标和字体大小转换为视频实际尺寸
-    currentFile.value.watermarks = watermarkList.value.map(wm => ({
+    currentFile.value.watermarks = clonePlain(watermarkList.value.map(wm => ({
       ...wm,
       // 保存实际视频坐标
       actualX: Math.round(wm.x * scaleX),
@@ -544,13 +577,13 @@ const saveWatermark = () => {
       // 保存缩放比例供下次编辑使用
       previewScaleX: scaleX,
       previewScaleY: scaleY
-    }))
+    })))
     if (currentFile.value.status === 'completed' || currentFile.value.status === 'error') {
       currentFile.value.status = 'pending'
       currentFile.value.progress = 0
     }
   } else if (currentFile.value) {
-    currentFile.value.watermarks = [...watermarkList.value]
+    currentFile.value.watermarks = clonePlain(watermarkList.value)
   }
   showWatermarkDialog.value = false
 }
@@ -558,7 +591,7 @@ const saveWatermark = () => {
 // 去水印相关函数
 const openRemoveWatermark = (file: any) => {
   removeCurrentFile.value = file
-  removeAreaList.value = file.removeAreas?.length ? [...file.removeAreas] : []
+  removeAreaList.value = file.removeAreas?.length ? clonePlain(file.removeAreas) : []
   selectedRemoveArea.value = removeAreaList.value.length > 0 ? 0 : null
   removeVideoDuration.value = file.durationSec || 0
   removeMode.value = file.removeMode || 'blur'
@@ -721,7 +754,7 @@ const saveRemoveWatermark = () => {
       const scaleX = video.videoWidth / removeVideoSize.value.width
       const scaleY = video.videoHeight / removeVideoSize.value.height
       
-      removeCurrentFile.value.removeAreas = removeAreaList.value.map(area => ({
+      removeCurrentFile.value.removeAreas = clonePlain(removeAreaList.value.map(area => ({
         x: Math.round(area.x * scaleX),
         y: Math.round(area.y * scaleY),
         width: Math.round(area.width * scaleX),
@@ -731,9 +764,9 @@ const saveRemoveWatermark = () => {
         displayY: area.y,
         displayWidth: area.width,
         displayHeight: area.height
-      }))
+      })))
     } else {
-      removeCurrentFile.value.removeAreas = [...removeAreaList.value]
+      removeCurrentFile.value.removeAreas = clonePlain(removeAreaList.value)
     }
     removeCurrentFile.value.removeMode = removeMode.value
     removeCurrentFile.value.removeFillColor = removeFillColor.value
@@ -779,7 +812,7 @@ const processFile = async (file: any, showDialog = true) => {
           })),
           mode: file.removeMode || 'blur',
           fillColor: file.removeFillColor || '#000000',
-          settings: file.settings || watermarkSettings.value
+          settings: cloneSettings(file.settings || watermarkSettings.value)
         })
       } else if (hasWatermarks) {
       // 添加水印处理
@@ -790,7 +823,7 @@ const processFile = async (file: any, showDialog = true) => {
         inputPath: file.path,
         outputPath: getOutputPath(file),
         watermarks: watermarksData,
-        settings: file.settings || watermarkSettings.value
+        settings: cloneSettings(file.settings || watermarkSettings.value)
       })
     } else {
       // 没有水印操作，直接复制
@@ -841,7 +874,7 @@ const processAll = async () => {
             })),
             mode: file.removeMode || 'blur',
             fillColor: file.removeFillColor || '#000000',
-            settings: file.settings || watermarkSettings.value
+            settings: cloneSettings(file.settings || watermarkSettings.value)
           })
         } else if (hasWatermarks) {
           // 添加水印处理
@@ -852,7 +885,7 @@ const processAll = async () => {
             inputPath: file.path,
             outputPath: getOutputPath(file),
             watermarks: watermarksData,
-            settings: file.settings || watermarkSettings.value
+            settings: cloneSettings(file.settings || watermarkSettings.value)
           })
         }
         

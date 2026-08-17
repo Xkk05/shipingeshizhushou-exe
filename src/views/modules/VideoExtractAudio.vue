@@ -93,7 +93,7 @@
       </div>
     </div>
 
-    <SettingsDialog v-model="showSettings" type="audio" :initial-settings="initialSettingsForDialog" :initial-format="initialFormatForDialog" @confirm="handleSettingsConfirm" />
+    <SettingsDialog v-model="showSettings" type="audio" format-scope="audio" :initial-settings="initialSettingsForDialog" :initial-format="initialFormatForDialog" @confirm="handleSettingsConfirm" />
     <QRUploadDialog v-model="showQRUpload" @files-uploaded="handleFilesUploaded" />
     <M3U8Dialog v-model="showURLDialog" @download-complete="handleURLDownloaded" />
     <AuthCodeDialog v-model="showAuthDialog" @success="handleAuthSuccess" />
@@ -117,6 +117,11 @@ import { platformService } from '@/services/platformService'
 import { getWebVideoMeta } from '@/utils/webMediaMeta'
 import { useI18n } from 'vue-i18n'
 import { useSelectableFiles } from '@/composables/useSelectableFiles'
+import {
+  isFileOutputCustomized,
+  markFileOutputCustomized,
+  resetFileOutputStatus,
+} from '@/utils/outputSettings'
 
 const { t } = useI18n()
 
@@ -297,6 +302,7 @@ const addFilesToList = async (selectedFiles: any[]) => {
         outputName: fileName?.replace(/\.[^.]+$/, `_extract.${outputFormat.value}`),
         outputFormat: outputFormat.value,
         settings: cloneSettings(batchAudioSettings.value),
+        hasCustomOutputSettings: false,
         outputAudioBitrate: audioBitrate.value,
         outputSampleRate: audioSampleRate.value,
         resolution: videoInfo.width && videoInfo.height ? `${videoInfo.width}x${videoInfo.height}` : '',
@@ -309,16 +315,14 @@ const addFilesToList = async (selectedFiles: any[]) => {
 
 const handleFilesSelected = addFilesToList
 
-const applyAudioSettingsToFile = (f: any, format: string, settings: any) => {
-    f.outputName = f.name.replace(/\.[^.]+$/, `_extract.${format}`)
-    f.outputFormat = format
-    f.settings = cloneSettings(settings)
-    f.outputAudioBitrate = audioBitrateLabel(settings)
-    f.outputSampleRate = audioSampleRateLabel(settings)
-    if (f.status === 'completed' || f.status === 'error') {
-      f.status = 'pending'
-      f.progress = 0
-    }
+const applyAudioSettingsToFile = (f: any, format: string, settings: any, customized: boolean) => {
+  f.outputName = f.name.replace(/\.[^.]+$/, `_extract.${format}`)
+  f.outputFormat = format
+  f.settings = cloneSettings(settings)
+  f.outputAudioBitrate = audioBitrateLabel(settings)
+  f.outputSampleRate = audioSampleRateLabel(settings)
+  markFileOutputCustomized(f, customized)
+  resetFileOutputStatus(f)
 }
 
 const handleSettingsConfirm = (data: { format: string; settings: any }) => {
@@ -326,13 +330,15 @@ const handleSettingsConfirm = (data: { format: string; settings: any }) => {
   const nextSettings = cloneSettings(data.settings)
 
   if (currentEditingFile.value) {
-    applyAudioSettingsToFile(currentEditingFile.value, nextFormat, nextSettings)
+    applyAudioSettingsToFile(currentEditingFile.value, nextFormat, nextSettings, true)
   } else {
     outputFormat.value = nextFormat
     batchAudioSettings.value = nextSettings
     audioBitrate.value = audioBitrateLabel(nextSettings)
     audioSampleRate.value = audioSampleRateLabel(nextSettings)
-    files.value.forEach(f => applyAudioSettingsToFile(f, nextFormat, nextSettings))
+    files.value.forEach(f => {
+      if (!isFileOutputCustomized(f)) applyAudioSettingsToFile(f, nextFormat, nextSettings, false)
+    })
   }
 }
 

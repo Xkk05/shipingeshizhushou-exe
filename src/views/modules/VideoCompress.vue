@@ -23,7 +23,7 @@
             :selection-disabled="file.status === 'converting'"
             :action-text="$t('common.compress')"
             @select-change="setFileSelected(file, $event)"
-            @settings="openSettings()"
+            @settings="openSettings(file)"
             @convert="compressFile(file)"
             @delete="deleteFile(file)"
           />
@@ -70,7 +70,7 @@
       </div>
     </div>
 
-    <SettingsDialog v-model="showSettings" type="video" :initial-settings="batchSettings" :initial-format="files[0]?.outputFormat || 'mp4'" @confirm="handleSettingsConfirm" />
+    <SettingsDialog v-model="showSettings" type="video" format-scope="video" :initial-settings="initialSettingsForDialog" :initial-format="initialFormatForDialog" @confirm="handleSettingsConfirm" />
     <QRUploadDialog v-model="showQRUpload" @files-uploaded="handleFilesUploaded" />
     <M3U8Dialog v-model="showURLDialog" @download-complete="handleURLDownloaded" />
     <AuthCodeDialog v-model="showAuthDialog" @success="handleAuthSuccess" />
@@ -129,6 +129,13 @@ import { platformService } from '@/services/platformService'
 import { getWebVideoMeta } from '@/utils/webMediaMeta'
 import { useI18n } from 'vue-i18n'
 import { useSelectableFiles } from '@/composables/useSelectableFiles'
+import {
+  buildOutputName,
+  cloneOutputSettings,
+  isFileOutputCustomized,
+  markFileOutputCustomized,
+  resetFileOutputStatus,
+} from '@/utils/outputSettings'
 
 const { t } = useI18n()
 
@@ -146,7 +153,25 @@ const outputPathType = ref('default')
 const isDragging = ref(false)
 const isProcessingDrop = ref(false)
 
-const batchSettings = ref({ resolution: 'auto', width: 0, height: 0, videoBitrate: 'auto', frameRate: 'auto', audioBitrate: 'auto' })
+const outputFormat = ref('mp4')
+const defaultCompressSettings = {
+  clarity: 'quality',
+  quality: 'auto',
+  resolution: 'auto',
+  width: 0,
+  height: 0,
+  videoCodec: 'auto',
+  frameRate: 'auto',
+  videoBitrate: 'auto',
+  audioCodec: 'auto',
+  channels: 'auto',
+  sampleRate: 'auto',
+  audioBitrate: 'auto',
+}
+const batchSettings = ref({ ...defaultCompressSettings })
+const currentEditingFile = ref<any>(null)
+const initialSettingsForDialog = ref<any>(batchSettings.value)
+const initialFormatForDialog = ref(outputFormat.value)
 const videoExtensions = ['mp4', 'avi', 'mkv', 'mov', 'flv', 'wmv', 'webm', '3gp', 'ts', 'm2ts']
 const {
   selectedFileIds,
@@ -259,14 +284,16 @@ const addFilesToList = async (selectedFiles: any[]) => {
     files.value.push({
       id: fileId, name: fileName, path: filePath,
       format: platformService.extname(fileName).slice(1),
-      outputName: fileName?.replace(/\.[^.]+$/, `_compress.mp4`),
-      outputFormat: 'mp4',
+      outputName: buildOutputName(fileName, '_compress', outputFormat.value),
+      outputFormat: outputFormat.value,
       resolution: videoInfo.width && videoInfo.height ? `${videoInfo.width}x${videoInfo.height}` : '',
-      outputResolution: videoInfo.width && videoInfo.height ? `${videoInfo.width}x${videoInfo.height}` : '',
+      outputResolution: outputResolutionFromSettings(batchSettings.value, videoInfo.width && videoInfo.height ? `${videoInfo.width}x${videoInfo.height}` : ''),
       duration: videoInfo.duration ? formatDuration(videoInfo.duration) : '00:00',
       size: videoInfo.size, estimatedSize: videoInfo.size ? Math.round(videoInfo.size * 0.7) : 0,
       bitrate: videoInfo.bitrate ? `${Math.round(videoInfo.bitrate / 1000)}kbps` : '',
-      thumbnail, status: 'pending', progress: 0
+      thumbnail, status: 'pending', progress: 0,
+      settings: cloneOutputSettings(batchSettings.value, defaultCompressSettings),
+      hasCustomOutputSettings: false,
     })
   }
 }
@@ -275,7 +302,12 @@ const handleFilesSelected = addFilesToList
 
 const clearFiles = () => { files.value = []; clearSelection() }
 const deleteFile = (file: any) => { files.value = files.value.filter(f => f.id !== file.id); removeSelection(file) }
-const openSettings = () => { showSettings.value = true }
+const openSettings = (file?: any) => {
+  currentEditingFile.value = file || null
+  initialSettingsForDialog.value = file ? cloneOutputSettings(file.settings || batchSettings.value, defaultCompressSettings) : cloneOutputSettings(batchSettings.value, defaultCompressSettings)
+  initialFormatForDialog.value = file?.outputFormat || outputFormat.value
+  showSettings.value = true
+}
 const outputResolutionFromSettings = (settings: any, fallback = '') => {
   if (settings?.width && settings?.height) return `${settings.width}x${settings.height}`
   const resolution = String(settings?.resolution || '')
@@ -283,35 +315,51 @@ const outputResolutionFromSettings = (settings: any, fallback = '') => {
   return fallback
 }
 
+const normalizeCompressSettings = (settings: any) => ({
+  clarity: settings?.clarity || 'quality',
+  quality: settings?.quality || 'auto',
+  resolution: settings?.resolution || 'auto',
+  width: Number(settings?.width || 0),
+  height: Number(settings?.height || 0),
+  videoCodec: settings?.videoCodec || 'auto',
+  videoBitrate: settings?.videoBitrate || 'auto',
+  frameRate: settings?.frameRate || 'auto',
+  audioCodec: settings?.audioCodec || 'auto',
+  channels: settings?.channels || 'auto',
+  sampleRate: settings?.sampleRate || 'auto',
+  audioBitrate: settings?.audioBitrate || 'auto',
+})
+
+const applyCompressOutputSettings = (file: any, format: string, settings: any, customized: boolean) => {
+  const nextFormat = format.toLowerCase()
+  file.outputFormat = nextFormat
+  file.outputName = buildOutputName(file.name, '_compress', nextFormat)
+  file.settings = cloneOutputSettings(settings, defaultCompressSettings)
+  file.outputResolution = outputResolutionFromSettings(file.settings, file.resolution)
+  markFileOutputCustomized(file, customized)
+  resetFileOutputStatus(file)
+}
+
 const handleSettingsConfirm = (data: { format: string; settings: any }) => {
-  batchSettings.value = {
-    resolution: data.settings?.resolution || 'auto',
-    width: Number(data.settings?.width || 0),
-    height: Number(data.settings?.height || 0),
-    videoBitrate: data.settings?.videoBitrate || 'auto',
-    frameRate: data.settings?.frameRate || 'auto',
-    audioBitrate: data.settings?.audioBitrate || 'auto',
+  const nextSettings = normalizeCompressSettings(data.settings)
+  const nextFormat = data.format.toLowerCase()
+
+  if (currentEditingFile.value) {
+    applyCompressOutputSettings(currentEditingFile.value, nextFormat, nextSettings, true)
+    return
   }
-  // 更新文件格式并重置已完成文件的状态，允许重新压缩
+
+  outputFormat.value = nextFormat
+  batchSettings.value = nextSettings
   files.value.forEach(f => {
-    f.outputFormat = data.format.toLowerCase()
-    f.outputName = f.name.replace(/\.[^.]+$/, `_compress.${data.format.toLowerCase()}`)
-    f.outputResolution = outputResolutionFromSettings(batchSettings.value, f.resolution)
-    if (f.status === 'completed' || f.status === 'error') {
-      f.status = 'pending'
-      f.progress = 0
-    }
+    if (!isFileOutputCustomized(f)) applyCompressOutputSettings(f, nextFormat, batchSettings.value, false)
   })
 }
 
 const applyBatchSettings = () => {
-  // 应用批量设置并重置已完成文件的状态
+  // 应用底部批量设置，仅更新未单独设置过输出参数的文件
   files.value.forEach(f => {
-    f.outputResolution = outputResolutionFromSettings(batchSettings.value, f.resolution)
-    if (f.status === 'completed' || f.status === 'error') {
-      f.status = 'pending'
-      f.progress = 0
-    }
+    if (!isFileOutputCustomized(f)) applyCompressOutputSettings(f, outputFormat.value, batchSettings.value, false)
   })
   showBatchSettings.value = false
 }
@@ -332,12 +380,15 @@ const compressFile = async (file: any, showDialog = true) => {
     if (file.status === 'converting') return
     file.status = 'converting'; file.progress = 0
     try {
+      const settings = cloneOutputSettings(file.settings || batchSettings.value, defaultCompressSettings)
       await platformService.convertVideo({
         id: file.id, inputPath: file.path, outputPath: getOutputPath(file), mode: compressMode.value,
         format: file.outputFormat || 'mp4',
-        resolution: batchSettings.value.resolution, width: batchSettings.value.width, height: batchSettings.value.height,
-        videoBitrate: batchSettings.value.videoBitrate,
-        frameRate: batchSettings.value.frameRate, audioBitrate: batchSettings.value.audioBitrate,
+        resolution: settings.resolution, width: settings.width, height: settings.height,
+        videoCodec: settings.videoCodec, audioCodec: settings.audioCodec,
+        videoBitrate: settings.videoBitrate,
+        frameRate: settings.frameRate, audioBitrate: settings.audioBitrate,
+        sampleRate: settings.sampleRate, channels: settings.channels,
         type: 'compress-video'
       })
       file.status = 'completed'; file.progress = 100
@@ -354,12 +405,15 @@ const compressAll = async () => {
       if (file.status === 'converting') continue
       file.status = 'converting'; file.progress = 0
       try {
+        const settings = cloneOutputSettings(file.settings || batchSettings.value, defaultCompressSettings)
         await platformService.convertVideo({
           id: file.id, inputPath: file.path, outputPath: getOutputPath(file), mode: compressMode.value,
           format: file.outputFormat || 'mp4',
-          resolution: batchSettings.value.resolution, width: batchSettings.value.width, height: batchSettings.value.height,
-          videoBitrate: batchSettings.value.videoBitrate,
-          frameRate: batchSettings.value.frameRate, audioBitrate: batchSettings.value.audioBitrate,
+          resolution: settings.resolution, width: settings.width, height: settings.height,
+          videoCodec: settings.videoCodec, audioCodec: settings.audioCodec,
+          videoBitrate: settings.videoBitrate,
+          frameRate: settings.frameRate, audioBitrate: settings.audioBitrate,
+          sampleRate: settings.sampleRate, channels: settings.channels,
           type: 'compress-video'
         })
         file.status = 'completed'; file.progress = 100

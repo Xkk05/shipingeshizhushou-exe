@@ -99,7 +99,7 @@
       </div>
     </div>
 
-    <SettingsDialog v-model="showSettings" type="audio" :initial-settings="initialSettingsForDialog" :initial-format="initialFormatForDialog" @confirm="handleSettingsConfirm" />
+    <SettingsDialog v-model="showSettings" type="audio" format-scope="audio" :initial-settings="initialSettingsForDialog" :initial-format="initialFormatForDialog" @confirm="handleSettingsConfirm" />
     <QRUploadDialog v-model="showQRUpload" @files-uploaded="handleFilesUploaded" />
     <M3U8Dialog v-model="showURLDialog" @download-complete="handleURLDownloaded" />
     <AuthCodeDialog v-model="showAuthDialog" @success="handleAuthSuccess" />
@@ -123,6 +123,11 @@ import { platformService } from '@/services/platformService'
 import { getWebVideoMeta } from '@/utils/webMediaMeta'
 import { useI18n } from 'vue-i18n'
 import { useSelectableFiles } from '@/composables/useSelectableFiles'
+import {
+  isFileOutputCustomized,
+  markFileOutputCustomized,
+  resetFileOutputStatus,
+} from '@/utils/outputSettings'
 
 const { t } = useI18n()
 
@@ -301,6 +306,7 @@ const addFilesToList = async (selectedFiles: any[]) => {
       outputName: fileName?.replace(/\.[^.]+$/, `_convert.${outputFormat.value}`),
       outputFormat: outputFormat.value,
       settings: cloneSettings(batchAudioSettings.value),
+      hasCustomOutputSettings: false,
       outputBitrate: bitrateLabel.value,
       outputSampleRate: sampleRate.value,
       duration: info.duration ? formatDuration(info.duration) : '00:00',
@@ -314,16 +320,22 @@ const addFilesToList = async (selectedFiles: any[]) => {
 
 const handleFilesSelected = addFilesToList
 
-const applyAudioSettingsToFile = (f: any, format: string, settings: any) => {
+const applyAudioSettingsToFile = (f: any, format: string, settings: any, customized: boolean) => {
   f.outputName = f.name.replace(/\.[^.]+$/, `_convert.${format}`)
   f.outputFormat = format
   f.settings = cloneSettings(settings)
   f.outputBitrate = audioBitrateText(settings)
   f.outputSampleRate = audioSampleRateText(settings)
-  if (f.status === 'completed' || f.status === 'error') {
-    f.status = 'pending'
-    f.progress = 0
+  markFileOutputCustomized(f, customized)
+  resetFileOutputStatus(f)
+}
+
+const audioBitrateForFile = (file: any) => {
+  if (file.settings?.audioBitrate && file.settings.audioBitrate !== 'auto') {
+    return `${file.settings.audioBitrate}k`
   }
+
+  return isFileOutputCustomized(file) ? undefined : (bitrate.value || undefined)
 }
 
 const handleSettingsConfirm = (data: { format: string; settings: any }) => {
@@ -331,13 +343,15 @@ const handleSettingsConfirm = (data: { format: string; settings: any }) => {
   const nextSettings = cloneSettings(data.settings)
 
   if (currentEditingFile.value) {
-    applyAudioSettingsToFile(currentEditingFile.value, nextFormat, nextSettings)
+    applyAudioSettingsToFile(currentEditingFile.value, nextFormat, nextSettings, true)
   } else {
     outputFormat.value = nextFormat
     batchAudioSettings.value = nextSettings
     bitrate.value = audioBitrateValue(nextSettings)
     sampleRate.value = audioSampleRateText(nextSettings)
-    files.value.forEach(f => applyAudioSettingsToFile(f, nextFormat, nextSettings))
+    files.value.forEach(f => {
+      if (!isFileOutputCustomized(f)) applyAudioSettingsToFile(f, nextFormat, nextSettings, false)
+    })
   }
 }
 
@@ -373,7 +387,7 @@ const convertFile = async (file: any, showDialog = true) => {
         inputPath: file.path, 
         outputPath: getOutputPath(file), 
         format: file.outputFormat || outputFormat.value, 
-        bitrate: file.settings?.audioBitrate && file.settings.audioBitrate !== 'auto' ? `${file.settings.audioBitrate}k` : (bitrate.value || undefined),
+        bitrate: audioBitrateForFile(file),
         sampleRate: file.settings?.sampleRate && file.settings.sampleRate !== 'auto' ? file.settings.sampleRate : undefined,
         channels: file.settings?.channels && file.settings.channels !== 'auto' ? file.settings.channels : undefined,
         settings: file.settings,
@@ -398,7 +412,7 @@ const convertAll = async () => {
           inputPath: file.path, 
           outputPath: getOutputPath(file), 
           format: file.outputFormat || outputFormat.value, 
-          bitrate: file.settings?.audioBitrate && file.settings.audioBitrate !== 'auto' ? `${file.settings.audioBitrate}k` : (bitrate.value || undefined),
+          bitrate: audioBitrateForFile(file),
           sampleRate: file.settings?.sampleRate && file.settings.sampleRate !== 'auto' ? file.settings.sampleRate : undefined,
           channels: file.settings?.channels && file.settings.channels !== 'auto' ? file.settings.channels : undefined,
           settings: file.settings,

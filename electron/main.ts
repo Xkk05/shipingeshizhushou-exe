@@ -1031,9 +1031,10 @@ ipcMain.handle('merge-videos', async (_, options: {
   inputPaths: string[]
   outputPath: string
   format: string
+  settings?: VideoConversionSettings
 }) => {
   configureFFmpeg()
-  const { id, inputPaths, outputPath, format } = options
+  const { id, inputPaths, outputPath, format, settings } = options
   const fs = require('fs')
   const os = require('os')
   
@@ -1092,7 +1093,7 @@ ipcMain.handle('merge-videos', async (_, options: {
     const concatList = tempFiles.map(f => f.replace(/\\/g, '/')).join('|')
     
     await new Promise<void>((resolve, reject) => {
-      const conversionPlan = createVideoConversionPlan(format || outputExtensionFromPath(outputPath, 'mp4'))
+      const conversionPlan = createVideoConversionPlan(format || outputExtensionFromPath(outputPath, 'mp4'), settings)
       const command = applyVideoConversionPlan(
         ffmpeg()
         .input(`concat:${concatList}`)
@@ -1155,12 +1156,16 @@ ipcMain.handle('compress-video', async (_, options: {
   resolution?: string
   width?: number
   height?: number
+  videoCodec?: string
+  audioCodec?: string
   videoBitrate?: string
   frameRate?: string
   audioBitrate?: string
+  sampleRate?: string
+  channels?: string
 }) => {
   configureFFmpeg()
-  const { id, inputPath, outputPath, format, quality, mode, resolution, width, height, videoBitrate, frameRate, audioBitrate } = options
+  const { id, inputPath, outputPath, format, quality, mode, resolution, width, height, videoCodec, audioCodec, videoBitrate, frameRate, audioBitrate, sampleRate, channels } = options
   const fs = require('fs')
   
   const outputDir = path.dirname(outputPath)
@@ -1195,9 +1200,13 @@ ipcMain.handle('compress-video', async (_, options: {
       resolution,
       width,
       height,
+      videoCodec,
+      audioCodec,
       frameRate,
       videoBitrate: attemptVideoBitrate > 0 ? String(attemptVideoBitrate) : undefined,
       audioBitrate: attemptAudioBitrate,
+      sampleRate,
+      channels,
     })
     const outputOptions: string[] = []
 
@@ -1248,12 +1257,18 @@ ipcMain.handle('compress-video', async (_, options: {
   try { fs.unlinkSync(outputPath) } catch (e) { /* ignore retry cleanup */ }
 
   const retryResult = await runCompression(true)
-  if (retryResult.outputSize < sourceInfo.size) {
-    return { success: true, outputPath, outputSize: retryResult.outputSize, originalSize: sourceInfo.size, retried: true }
-  }
+  const warning = retryResult.outputSize < sourceInfo.size
+    ? undefined
+    : `源文件可能已经高度压缩，输出文件已生成但体积未继续变小。`
 
-  try { fs.unlinkSync(outputPath) } catch (e) { /* ignore failed compression cleanup */ }
-  throw new Error(`压缩后文件仍未小于源文件（源文件 ${sourceInfo.size} 字节，输出 ${retryResult.outputSize} 字节）。源文件可能已经高度压缩，请选择更低分辨率或更低码率。`)
+  return {
+    success: true,
+    outputPath,
+    outputSize: retryResult.outputSize,
+    originalSize: sourceInfo.size,
+    retried: true,
+    warning,
+  }
 })
 
 // 音频转换
@@ -2120,12 +2135,27 @@ ipcMain.handle('open-external-url', async (_, url: string) => {
 })
 
 // 启动更新程序
-ipcMain.on('start-updater', (event, { url, hash, version }) => {
+ipcMain.handle('start-updater', async (_, { url, hash, version }) => {
+  if (!url || typeof url !== 'string') {
+    return { success: false, message: '更新下载地址无效' }
+  }
+
+  if (process.platform !== 'win32') {
+    console.warn('Updater helper is only available on Windows, opening download URL instead.')
+    return openExternalUrlWithFallback(url)
+  }
+
+  const fs = require('fs')
   const appDir = path.dirname(app.getPath('exe'))
   const exeName = path.basename(app.getPath('exe'))
   const updaterPath = app.isPackaged 
     ? path.join(process.resourcesPath, 'updater.exe')
     : path.join(app.getAppPath(), 'public', 'updater.exe')
+
+  if (!fs.existsSync(updaterPath)) {
+    console.error('Updater helper missing:', updaterPath)
+    return { success: false, message: '更新程序缺失，请重新安装应用或手动下载更新包' }
+  }
 
   const args = [
     '--url', url,
@@ -2137,11 +2167,21 @@ ipcMain.on('start-updater', (event, { url, hash, version }) => {
 
   console.log('Starting updater:', updaterPath, args)
 
-  const subprocess = spawn(updaterPath, args, {
-    detached: true,
-    stdio: 'ignore'
-  })
+  try {
+    const subprocess = spawn(updaterPath, args, {
+      detached: true,
+      stdio: 'ignore'
+    })
 
-  subprocess.unref()
-  app.quit()
+    subprocess.once('error', (err) => {
+      console.error('Failed to start updater:', err)
+    })
+
+    subprocess.unref()
+    setTimeout(() => app.quit(), 300)
+    return { success: true, version }
+  } catch (err: any) {
+    console.error('Failed to start updater:', err)
+    return { success: false, message: err?.message || '启动更新程序失败' }
+  }
 })

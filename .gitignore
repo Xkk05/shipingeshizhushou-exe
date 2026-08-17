@@ -24,6 +24,8 @@ dist-web-check/
 converted/
 uploads/
 test-media/
+test-results/
+playwright-report/
 
 # Electron/runtime artifacts generated during local launch
 chrome_*.pak

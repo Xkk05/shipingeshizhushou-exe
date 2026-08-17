@@ -214,7 +214,22 @@
     "loginFailed": "Login Failed",
     "loginCancelled": "Login Cancelled",
     "logoutSuccess": "Logout Success",
-    "logoutFailed": "Logout Failed"
+    "logoutFailed": "Logout Failed",
+    "clear": "Clear",
+    "downloadFailed": "Download failed",
+    "duration": "Duration",
+    "networkError": "Network error",
+    "noClipsYet": "No clips yet",
+    "position": "Position",
+    "removeMode": "Removal mode",
+    "size": "Size",
+    "loginManualTip": "If the browser did not open automatically, continue manually:",
+    "reopenLoginPage": "Open again",
+    "copyLoginLink": "Copy login link",
+    "reopenBrowserSuccess": "Tried opening the browser again",
+    "reopenBrowserFailed": "Failed to open the browser again",
+    "loginLinkCopied": "Login link copied",
+    "copyLoginLinkFailed": "Failed to copy login link"
   },
   "error": {
     "dragDropFailed": "Drag and drop failed",

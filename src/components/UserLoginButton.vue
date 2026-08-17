@@ -9,7 +9,7 @@
       <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
         <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
       </svg>
-      <span v-if="!props.iconOnly">{{ props.label }}</span>
+      <span v-if="!props.iconOnly">{{ displayLabel }}</span>
     </el-button>
 
     <!-- 已登录状态 -->
@@ -45,10 +45,10 @@
         </el-icon>
         <p>{{ $t('common.waitingForLogin') }}</p>
         <div v-if="currentLoginUrl" class="login-manual">
-          <p class="manual-tip">如果浏览器没有自动打开，请手动继续：</p>
+          <p class="manual-tip">{{ $t('common.loginManualTip') }}</p>
           <div class="manual-actions">
-            <el-button @click="handleOpenLoginUrl">再次打开</el-button>
-            <el-button type="primary" plain @click="handleCopyLoginUrl">复制登录链接</el-button>
+            <el-button @click="handleOpenLoginUrl">{{ $t('common.reopenLoginPage') }}</el-button>
+            <el-button type="primary" plain @click="handleCopyLoginUrl">{{ $t('common.copyLoginLink') }}</el-button>
           </div>
           <div class="manual-url">{{ currentLoginUrl }}</div>
         </div>
@@ -70,7 +70,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useAuthStore } from '@/stores/authStore'
 import { ElMessage } from 'element-plus'
 import * as loginService from '@/services/loginService'
@@ -80,12 +80,13 @@ import { useI18n } from 'vue-i18n'
 const { t } = useI18n()
 const props = withDefaults(defineProps<{ iconOnly?: boolean; label?: string }>(), {
   iconOnly: false,
-  label: '登录/注册',
+  label: '',
 })
 const authStore = useAuthStore()
 const showLoginProgress = ref(false)
 const showLogoutConfirm = ref(false)
 const currentLoginUrl = ref('')
+const displayLabel = computed(() => props.label || t('common.login'))
 
 onMounted(() => {
   // 初始化token
@@ -145,9 +146,9 @@ const handleOpenLoginUrl = async () => {
   if (!currentLoginUrl.value) return
   try {
     await platformService.openExternalUrl(currentLoginUrl.value)
-    ElMessage.success('已再次尝试打开浏览器')
+    ElMessage.success(t('common.reopenBrowserSuccess'))
   } catch (error: any) {
-    ElMessage.error(error.message || '再次打开浏览器失败')
+    ElMessage.error(error.message || t('common.reopenBrowserFailed'))
   }
 }
 
@@ -160,9 +161,9 @@ const handleCopyLoginUrl = async () => {
     } else {
       await navigator.clipboard.writeText(currentLoginUrl.value)
     }
-    ElMessage.success('登录链接已复制')
+    ElMessage.success(t('common.loginLinkCopied'))
   } catch (error: any) {
-    ElMessage.error(error.message || '复制登录链接失败')
+    ElMessage.error(error.message || t('common.copyLoginLinkFailed'))
   }
 }
 

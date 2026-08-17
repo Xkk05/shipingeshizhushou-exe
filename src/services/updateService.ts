@@ -16,6 +16,11 @@ export interface UpdateInfo {
   release_date?: string
 }
 
+interface StartUpdaterResult {
+  success?: boolean
+  message?: string
+}
+
 export const updateService = {
   /**
    * 检查更新
@@ -44,10 +49,14 @@ export const updateService = {
     const { ipcRenderer } = (window as any).require('electron')
     
     // 发送指令给主进程执行更新程序
-    ipcRenderer.send('start-updater', {
+    const result = await ipcRenderer.invoke('start-updater', {
       url: updateInfo.download_url,
       hash: updateInfo.package_hash || '',
       version: updateInfo.version
-    })
+    }) as StartUpdaterResult
+
+    if (result && result.success === false) {
+      throw new Error(result.message || t('error.updateFailed'))
+    }
   }
 }

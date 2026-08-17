@@ -1,6 +1,25 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
-import ElementPlus from 'element-plus'
+import {
+  ElButton,
+  ElCheckbox,
+  ElColorPicker,
+  ElDialog,
+  ElDrawer,
+  ElDropdown,
+  ElDropdownItem,
+  ElDropdownMenu,
+  ElIcon,
+  ElInput,
+  ElInputNumber,
+  ElOption,
+  ElProgress,
+  ElRadio,
+  ElRadioGroup,
+  ElSelect,
+  ElSlider,
+} from 'element-plus'
+import { provideGlobalConfig } from 'element-plus/es/components/config-provider/index.mjs'
 import 'element-plus/dist/index.css'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import router from './router'
@@ -14,11 +33,31 @@ import { setupRouterSeo } from './utils/seo'
 
 const app = createApp(App)
 const pinia = createPinia()
+const elementComponents = [
+  ElButton,
+  ElCheckbox,
+  ElColorPicker,
+  ElDialog,
+  ElDrawer,
+  ElDropdown,
+  ElDropdownItem,
+  ElDropdownMenu,
+  ElIcon,
+  ElInput,
+  ElInputNumber,
+  ElOption,
+  ElProgress,
+  ElRadio,
+  ElRadioGroup,
+  ElSelect,
+  ElSlider,
+]
 
 app.use(pinia)
 app.use(router)
 app.use(i18n)
-app.use(ElementPlus, { locale: zhCn })
+elementComponents.forEach((component) => app.use(component))
+provideGlobalConfig({ locale: zhCn }, app, true)
 setupRouterSeo(router, i18n)
 app.mount('#app')
 

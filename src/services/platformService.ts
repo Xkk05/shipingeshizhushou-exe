@@ -1,4 +1,6 @@
 import axios from 'axios';
+import { resolveElectronConversionChannel } from '@/services/conversionRouting';
+import { toIpcPayload } from '@/utils/ipcPayload';
 
 export interface PlatformService {
   isElectron: boolean;
@@ -51,9 +53,6 @@ const API_BASE = rawApiBase.replace(/\/+$/, '');
 
 const buildApiUrl = (pathname: string) => `${API_BASE}${pathname}`;
 
-const audioOutputFormats = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'm4r', 'mp2', 'aac', 'wma', 'aiff']);
-const isAudioOutputFormat = (format?: string) => Boolean(format && audioOutputFormats.has(String(format).toLowerCase()));
-
 const normalizeDownloadUrl = (url: string) => {
   if (/^https?:\/\//i.test(url)) return url;
   return `${window.location.origin}${url.startsWith('/') ? url : `/${url}`}`;
@@ -93,17 +92,11 @@ class ElectronPlatformService implements PlatformService {
   async getVideoThumbnail(filePath: string): Promise<string> { return await this.ipcRenderer.invoke('get-video-thumbnail', filePath); }
   async playVideo(filePath: string): Promise<void> { return await this.ipcRenderer.invoke('play-video', filePath); }
   async convertVideo(options: any): Promise<any> {
-    const channelMap: Record<string, string> = {
-      'compress-video': 'compress-video',
-      'audio-convert': 'convert-audio',
-      'extract-audio': 'extract-audio',
-      'video-to-gif': 'video-to-gif',
-    };
-    const channel = channelMap[options?.type] || (isAudioOutputFormat(options?.format) ? 'convert-audio' : 'convert-video');
-    return await this.ipcRenderer.invoke(channel, options);
+    const channel = resolveElectronConversionChannel(options);
+    return await this.ipcRenderer.invoke(channel, toIpcPayload(options));
   }
-  async removeWatermark(options: any): Promise<void> { return await this.ipcRenderer.invoke('remove-watermark', options); }
-  async addWatermark(options: any): Promise<void> { return await this.ipcRenderer.invoke('add-watermark', options); }
+  async removeWatermark(options: any): Promise<void> { return await this.ipcRenderer.invoke('remove-watermark', toIpcPayload(options)); }
+  async addWatermark(options: any): Promise<void> { return await this.ipcRenderer.invoke('add-watermark', toIpcPayload(options)); }
   onConvertProgress(callback: (data: { id: string; percent: number }) => void, channel = 'convert-progress'): void { this.ipcRenderer.on(channel, (_: any, data: any) => callback(data)); }
   removeConvertProgressListeners(channel = 'convert-progress'): void { this.ipcRenderer.removeAllListeners(channel); }
   async getDefaultOutputDir(): Promise<string> { return await this.ipcRenderer.invoke('get-default-output-dir'); }

@@ -8,6 +8,7 @@ export type VideoConversionSettings = {
   videoBitrate?: string
   audioBitrate?: string
   sampleRate?: string
+  channels?: string | number
 }
 
 export type VideoConversionPlan = {
@@ -136,6 +137,15 @@ const selectedSampleRate = (sampleRate?: string) => {
   return Number.isFinite(numeric) && numeric > 0 ? Math.round(numeric) : undefined
 }
 
+const selectedChannels = (channels?: string | number) => {
+  if (channels === undefined || channels === null || channels === '' || channels === 'auto') return undefined
+  if (channels === 'mono') return 1
+  if (channels === 'stereo') return 2
+
+  const numeric = Number(channels)
+  return Number.isFinite(numeric) && numeric > 0 ? Math.round(numeric) : undefined
+}
+
 const selectedFrameRate = (frameRate?: string, maxFrameRate?: number) => {
   if (!frameRate || frameRate === 'auto') return undefined
   const numeric = Number(frameRate)
@@ -157,7 +167,7 @@ export const createVideoConversionPlan = (format: string, settings: VideoConvers
     videoBitrate: selectedBitrate(settings.videoBitrate, profile?.maxVideoBitrate),
     audioBitrate: selectedBitrate(settings.audioBitrate, profile?.maxAudioBitrate),
     sampleRate: profile?.sampleRate || selectedSampleRate(settings.sampleRate),
-    audioChannels: profile?.audioChannels,
+    audioChannels: profile?.audioChannels || selectedChannels(settings.channels),
     outputOptions: [...(profile?.outputOptions || [])],
   }
 }

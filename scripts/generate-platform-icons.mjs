@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, copyFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
@@ -13,8 +13,6 @@ if (!existsSync(sourceIco)) {
 
 mkdirSync(buildDir, { recursive: true });
 mkdirSync(linuxIconsDir, { recursive: true });
-
-copyFileSync(sourceIco, path.join(buildDir, 'icon.ico'));
 
 const powershellScript = `
 Add-Type -AssemblyName System.Drawing
@@ -52,4 +50,42 @@ execFileSync(
   { stdio: 'inherit' }
 );
 
-console.log('Generated cross-platform icons in build/icons and build/icon.png');
+const windowsIconSizes = [16, 24, 32, 48, 64, 96, 128, 256];
+const pngFrames = windowsIconSizes.map((size) => {
+  const filePath = path.join(linuxIconsDir, `${size}x${size}.png`);
+  if (!existsSync(filePath)) {
+    throw new Error(`Generated icon frame not found: ${filePath}`);
+  }
+
+  return {
+    size,
+    buffer: readFileSync(filePath),
+  };
+});
+
+const headerSize = 6;
+const entrySize = 16;
+let imageOffset = headerSize + entrySize * pngFrames.length;
+const icoParts = [Buffer.alloc(headerSize + entrySize * pngFrames.length)];
+
+icoParts[0].writeUInt16LE(0, 0);
+icoParts[0].writeUInt16LE(1, 2);
+icoParts[0].writeUInt16LE(pngFrames.length, 4);
+
+pngFrames.forEach((frame, index) => {
+  const entryOffset = headerSize + entrySize * index;
+  icoParts[0].writeUInt8(frame.size === 256 ? 0 : frame.size, entryOffset);
+  icoParts[0].writeUInt8(frame.size === 256 ? 0 : frame.size, entryOffset + 1);
+  icoParts[0].writeUInt8(0, entryOffset + 2);
+  icoParts[0].writeUInt8(0, entryOffset + 3);
+  icoParts[0].writeUInt16LE(1, entryOffset + 4);
+  icoParts[0].writeUInt16LE(32, entryOffset + 6);
+  icoParts[0].writeUInt32LE(frame.buffer.length, entryOffset + 8);
+  icoParts[0].writeUInt32LE(imageOffset, entryOffset + 12);
+  imageOffset += frame.buffer.length;
+  icoParts.push(frame.buffer);
+});
+
+writeFileSync(path.join(buildDir, 'icon.ico'), Buffer.concat(icoParts));
+
+console.log('Generated cross-platform icons in build/icons, build/icon.png, and build/icon.ico');

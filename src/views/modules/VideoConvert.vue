@@ -45,7 +45,7 @@
       @show-settings="openSettings()"
       @output-path-change="handleOutputPathChange"
     />
-    <SettingsDialog v-model="showSettings" type="video" :initial-settings="initialSettingsForDialog" :initial-format="initialFormatForDialog" @confirm="handleSettingsConfirm" @close="showSettings = false" />
+    <SettingsDialog v-model="showSettings" type="video" format-scope="video" :initial-settings="initialSettingsForDialog" :initial-format="initialFormatForDialog" @confirm="handleSettingsConfirm" @close="showSettings = false" />
     <QRUploadDialog v-model="showQRUpload" @files-uploaded="handleFilesUploaded" />
     <M3U8Dialog v-model="showURLDialog" @download-complete="handleURLDownloaded" />
     <AuthCodeDialog v-model="showAuthDialog" @success="handleAuthSuccess" />
@@ -70,6 +70,13 @@ import { handleDragDropEvent, VIDEO_EXTENSIONS } from '@/utils/dragDropUtils'
 import AuthCodeDialog from '@/components/AuthCodeDialog.vue'
 import { platformService } from '@/services/platformService'
 import { useSelectableFiles } from '@/composables/useSelectableFiles'
+import {
+  buildOutputName,
+  cloneOutputSettings,
+  isFileOutputCustomized,
+  markFileOutputCustomized,
+  resetFileOutputStatus,
+} from '@/utils/outputSettings'
 
 const { t } = useI18n()
 
@@ -262,7 +269,7 @@ const addFilesToList = async (selectedFiles: any[]) => {
       name: fileName,
       path: filePath,
       format: platformService.extname(fileName).slice(1),
-      outputName: fileName.replace(/\.[^.]+$/, `_convert.${outputFormat.value}`),
+      outputName: buildOutputName(fileName, '_convert', outputFormat.value),
       outputFormat: outputFormat.value,
       resolution: videoInfo.width && videoInfo.height ? `${videoInfo.width}x${videoInfo.height}` : '',
       outputResolution: videoInfo.width && videoInfo.height ? `${videoInfo.width}x${videoInfo.height}` : '',
@@ -272,7 +279,8 @@ const addFilesToList = async (selectedFiles: any[]) => {
       thumbnail,
       status: 'pending',
       progress: 0,
-      settings: JSON.parse(JSON.stringify(convertSettings.value)),
+      settings: cloneOutputSettings(convertSettings.value),
+      hasCustomOutputSettings: false,
     })
   }
 }
@@ -298,11 +306,11 @@ const deleteFile = (file: any) => {
 const openSettings = (file?: any) => {
   if (file) {
     currentEditingFile.value = file
-    initialSettingsForDialog.value = file.settings
+    initialSettingsForDialog.value = cloneOutputSettings(file.settings || convertSettings.value)
     initialFormatForDialog.value = file.outputFormat
   } else {
     currentEditingFile.value = null
-    initialSettingsForDialog.value = convertSettings.value
+    initialSettingsForDialog.value = cloneOutputSettings(convertSettings.value)
     initialFormatForDialog.value = outputFormat.value
   }
   showSettings.value = true
@@ -325,7 +333,7 @@ const runConversionForFile = async (file: any) => {
   file.status = 'converting'
   file.progress = 0
   try {
-    const settings = JSON.parse(JSON.stringify(file.settings || convertSettings.value))
+    const settings = cloneOutputSettings(file.settings || convertSettings.value)
     await platformService.convertVideo({ id: file.id, inputPath: file.path, outputPath: getOutputPath(file), format: file.outputFormat, settings })
     file.status = 'completed'
     file.progress = 100
@@ -358,12 +366,13 @@ const convertSelectedOrAll = () => {
 
 const handleSettingsConfirm = (data: any) => {
   const newFormat = data.format.toLowerCase()
-  const newSettings = data.settings
+  const newSettings = cloneOutputSettings(data.settings)
 
-  const updateFileDisplay = (f: any) => {
+  const updateFileDisplay = (f: any, customized: boolean) => {
     f.outputFormat = newFormat
-    f.settings = JSON.parse(JSON.stringify(newSettings))
-    f.outputName = f.name.replace(/\.[^.]+$/, `_convert.${newFormat}`)
+    f.settings = cloneOutputSettings(newSettings)
+    f.outputName = buildOutputName(f.name, '_convert', newFormat)
+    markFileOutputCustomized(f, customized)
 
     if (newSettings.resolution === 'auto') {
       f.outputResolution = f.resolution
@@ -373,18 +382,17 @@ const handleSettingsConfirm = (data: any) => {
       f.outputResolution = newSettings.resolution
     }
 
-    if (f.status === 'completed' || f.status === 'error') {
-      f.status = 'pending'
-      f.progress = 0
-    }
+    resetFileOutputStatus(f)
   }
 
   if (currentEditingFile.value) {
-    updateFileDisplay(currentEditingFile.value)
+    updateFileDisplay(currentEditingFile.value, true)
   } else {
     outputFormat.value = newFormat
-    convertSettings.value = JSON.parse(JSON.stringify(newSettings))
-    files.value.forEach((f) => updateFileDisplay(f))
+    convertSettings.value = cloneOutputSettings(newSettings)
+    files.value.forEach((f) => {
+      if (!isFileOutputCustomized(f)) updateFileDisplay(f, false)
+    })
   }
 }
 

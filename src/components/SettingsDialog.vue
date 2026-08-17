@@ -12,10 +12,13 @@
     <div class="dialog-content">
       <!-- 左侧格式列表 -->
       <div class="format-panel">
-        <div class="format-tabs">
+        <div v-if="showMixedFormatTabs" class="format-tabs">
           <span :class="{ active: formatTab === 'recent' }" @click="formatTab = 'recent'">{{ t('common.recent') }}</span>
           <span :class="{ active: formatTab === 'video' }" @click="formatTab = 'video'">{{ t('common.video') }}</span>
           <span :class="{ active: formatTab === 'audio' }" @click="formatTab = 'audio'">{{ t('common.audio') }}</span>
+        </div>
+        <div v-else class="format-tabs single-tab">
+          <span class="active">{{ isAudioOnly ? t('common.audio') : t('common.video') }}</span>
         </div>
         <div class="format-list">
           <div 
@@ -372,6 +375,15 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import {
+  AUDIO_FORMATS,
+  coerceFormatForScope,
+  DEFAULT_AUDIO_FORMAT,
+  DEFAULT_VIDEO_FORMAT,
+  type FormatScope,
+  isAudioFormat,
+  VIDEO_FORMATS,
+} from '@/utils/mediaFormats'
 
 const { t } = useI18n()
 
@@ -384,6 +396,7 @@ interface DeviceModel {
 const props = defineProps<{
   modelValue: boolean
   type?: 'video' | 'audio'
+  formatScope?: FormatScope
   initialSettings?: any
   initialFormat?: string
 }>()
@@ -395,10 +408,12 @@ const visible = computed({
   set: (val) => emit('update:modelValue', val)
 })
 
-const formatTab = ref('video')
+type FormatTab = 'recent' | 'video' | 'audio'
+
+const formatTab = ref<FormatTab>('video')
 const settingsTab = ref('simple')
 const searchQuery = ref('')
-const selectedFormat = ref('MP4')
+const selectedFormat = ref(DEFAULT_VIDEO_FORMAT)
 
 // 默认设置
 const defaultSettings = {
@@ -418,45 +433,43 @@ const defaultSettings = {
 
 const settings = ref({ ...defaultSettings })
 const showResolutionPresets = computed(() => String(settings.value.resolution || '').startsWith('custom'))
+const currentFormatScope = computed<FormatScope>(() => props.formatScope || (props.type === 'audio' ? 'audio' : 'all'))
+const isAudioOnly = computed(() => currentFormatScope.value === 'audio')
+const isVideoOnly = computed(() => currentFormatScope.value === 'video')
+const showMixedFormatTabs = computed(() => currentFormatScope.value === 'all')
+
+const cloneSettings = (value: any) => JSON.parse(JSON.stringify(value || {}))
+const mergedSettings = (value: any) => ({ ...defaultSettings, ...cloneSettings(value) })
 
 // 监听弹窗显示，初始化数据
 watch(() => props.modelValue, (newVal) => {
   if (newVal) {
-    if (props.type) {
+    if (isAudioOnly.value) {
+      formatTab.value = 'audio'
+    } else if (isVideoOnly.value) {
+      formatTab.value = 'video'
+    } else if (props.type) {
       formatTab.value = props.type
     }
     
-    // 如果有传入初始格式，则使用
-    if (props.initialFormat) {
-      selectedFormat.value = props.initialFormat.toUpperCase()
-      // 根据格式判断所在的 tab
-      if (audioFormats.includes(selectedFormat.value)) {
-        formatTab.value = 'audio'
-      } else {
-        formatTab.value = 'video'
-      }
+    selectedFormat.value = coerceFormatForScope(props.initialFormat, currentFormatScope.value)
+    if (showMixedFormatTabs.value) {
+      formatTab.value = isAudioFormat(selectedFormat.value) ? 'audio' : 'video'
     } else {
-      selectedFormat.value = props.type === 'audio' ? 'MP3' : 'MP4'
+      formatTab.value = isAudioOnly.value ? 'audio' : 'video'
     }
 
     // 如果有传入初始设置，则深度拷贝使用，否则使用默认设置
-    if (props.initialSettings) {
-      settings.value = JSON.parse(JSON.stringify(props.initialSettings))
-    } else {
-      settings.value = { ...defaultSettings }
-    }
-    if (audioFormats.includes(selectedFormat.value)) {
+    settings.value = mergedSettings(props.initialSettings)
+    if (isAudioFormat(selectedFormat.value)) {
       settings.value.audioCodec = 'auto'
     }
   }
 })
 
-const videoFormats = ['MP4', 'AVI', 'WMV', 'FLV', 'MKV', 'MOV', 'WEBM', '3GP', 'F4V', 'SWF', 'OGV', 'ASF', 'VOB', 'MPG', 'MPEG', 'WTV', 'TS', 'M2TS', 'MTS', 'M2T', 'M4V']
-const audioFormats = ['MP3', 'WAV', 'OGG', 'FLAC', 'M4A', 'M4R', 'MP2', 'AAC', 'WMA', 'AIFF']
-
 const displayFormats = computed(() => {
   // 根据formatTab决定显示哪种格式
-  const formats = formatTab.value === 'audio' ? audioFormats : videoFormats
+  const formats = isAudioOnly.value || formatTab.value === 'audio' ? AUDIO_FORMATS : VIDEO_FORMATS
   if (searchQuery.value) {
     return formats.filter(f => f.toLowerCase().includes(searchQuery.value.toLowerCase()))
   }
@@ -464,23 +477,37 @@ const displayFormats = computed(() => {
 })
 
 watch(formatTab, (nextTab) => {
-  if (nextTab === 'audio' && !audioFormats.includes(selectedFormat.value)) {
-    selectedFormat.value = 'MP3'
-  } else if (nextTab === 'video' && !videoFormats.includes(selectedFormat.value)) {
-    selectedFormat.value = 'MP4'
+  if (isAudioOnly.value && nextTab !== 'audio') {
+    formatTab.value = 'audio'
+    return
+  }
+  if (isVideoOnly.value && nextTab !== 'video') {
+    formatTab.value = 'video'
+    return
+  }
+
+  if (nextTab === 'audio' && !isAudioFormat(selectedFormat.value)) {
+    selectedFormat.value = DEFAULT_AUDIO_FORMAT
+  } else if (nextTab !== 'audio' && !VIDEO_FORMATS.includes(selectedFormat.value as any)) {
+    selectedFormat.value = DEFAULT_VIDEO_FORMAT
   }
 })
 
 watch(selectedFormat, (format) => {
-  if (audioFormats.includes(format)) {
+  const scopedFormat = coerceFormatForScope(format, currentFormatScope.value)
+  if (scopedFormat !== format) {
+    selectedFormat.value = scopedFormat
+    return
+  }
+
+  if (isAudioFormat(format)) {
     settings.value.audioCodec = 'auto'
   }
 })
 
 // 获取格式图标颜色类
 const getFormatColorClass = (fmt: string) => {
-  const audioFmts = ['MP3', 'WAV', 'OGG', 'FLAC', 'M4A', 'M4R', 'MP2', 'AAC', 'WMA', 'AIFF']
-  if (audioFmts.includes(fmt)) {
+  if (isAudioFormat(fmt)) {
     // 音频格式使用不同颜色
     const colorMap: Record<string, string> = {
       'MP3': 'format-purple',
@@ -659,7 +686,7 @@ const handleClose = () => {
 }
 
 const confirm = () => {
-  emit('confirm', { format: selectedFormat.value, settings: settings.value })
+  emit('confirm', { format: selectedFormat.value, settings: cloneSettings(settings.value) })
   handleClose()
 }
 </script>

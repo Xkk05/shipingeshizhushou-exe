@@ -1,14 +1,16 @@
 {
   "name": "kunqiu-video-converter",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "视频格式助手",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
     "electron:dev": "vite --mode electron",
-    "build": "vite build --mode electron && electron-builder",
-    "build:desktop": "vite build --mode electron && electron-builder --config electron-builder.multi-platform.js",
+    "build": "npm run build:icons && npm run build:updater && vite build --mode electron && electron-builder --publish never",
+    "build:icons": "node scripts/generate-platform-icons.mjs",
+    "build:updater": "node scripts/build-updater.mjs",
+    "build:desktop": "npm run build:icons && npm run build:updater && vite build --mode electron && electron-builder --config electron-builder.multi-platform.js",
     "build:mac": "vite build --mode electron && electron-builder --mac zip --config electron-builder.multi-platform.js",
     "build:web": "vite build --mode web && node scripts/generate-seo-files.mjs",
     "build:server": "tsc -p tsconfig.server.json",
@@ -17,9 +19,13 @@
     "start": "node dist-server/server/index.js",
     "preview": "vite preview",
     "test": "vitest",
-    "test:run": "vitest --run"
+    "test:run": "vitest --run",
+    "test:visual": "playwright test",
+    "test:packaged": "node scripts/verify-packaged-render.mjs",
+    "test:installed": "node scripts/verify-installed-render.mjs"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/fluent-ffmpeg": "^2.1.28",
@@ -64,17 +70,19 @@
   "build": {
     "appId": "com.kunqiu.video-converter",
     "productName": "视频格式助手",
+    "electronDist": "node_modules/electron/dist",
     "directories": {
-      "output": "release_build_v101_portable_new"
+      "output": "release_build_v102_download_fixed"
     },
     "asar": true,
     "asarUnpack": [
       "node_modules/@ffmpeg-installer/**/*",
       "node_modules/@ffprobe-installer/**/*"
     ],
+    "afterPack": "scripts/after-pack.mjs",
     "extraResources": [
       {
-        "from": "public/app-icon.ico",
+        "from": "build/icon.ico",
         "to": "app-icon.ico"
       },
       {
@@ -86,6 +94,7 @@
       "dist/**/*",
       "dist-electron/**/*",
       "node_modules/**/*",
+      "build/icon.ico",
       "public/app-icon.ico"
     ],
     "win": {
@@ -103,21 +112,21 @@
           ]
         }
       ],
-      "icon": "public/app-icon.ico",
-      "signAndEditExecutable": true,
+      "icon": "build/icon.ico",
+      "signAndEditExecutable": false,
       "requestedExecutionLevel": "asInvoker"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "allowElevation": true,
-      "installerIcon": "public/app-icon.ico",
-      "uninstallerIcon": "public/app-icon.ico",
-      "installerHeaderIcon": "public/app-icon.ico",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "视频格式助手",
-      "artifactName": "${productName} Setup ${version}.${ext}",
+      "artifactName": "kunqiu-video-converter-setup-${version}.${ext}",
       "deleteAppDataOnUninstall": false,
       "runAfterFinish": true,
       "menuCategory": "多媒体工具",
@@ -128,7 +137,7 @@
       "include": "build/installer.nsh"
     },
     "portable": {
-      "artifactName": "${productName} Portable ${version}.${ext}"
+      "artifactName": "kunqiu-video-converter-portable-${version}.${ext}"
     }
   }
 }
