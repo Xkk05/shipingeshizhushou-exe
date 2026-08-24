@@ -8,6 +8,7 @@ import {
   DEFAULT_AUDIO_FORMAT,
   DEFAULT_VIDEO_FORMAT,
   isAudioFormat,
+  isVideoFileName,
   isVideoFormat,
 } from '../src/utils/mediaFormats'
 import {
@@ -29,13 +30,25 @@ describe('media format scopes', () => {
     expect(coerceFormatForScope('flac', 'audio')).toBe('FLAC')
     expect(coerceFormatForScope('m4a', 'all')).toBe('M4A')
     expect(coerceFormatForScope('webm', 'all')).toBe('WEBM')
+    expect(coerceFormatForScope('swf', 'video')).toBe(DEFAULT_VIDEO_FORMAT)
   })
 
   it('classifies audio and video formats separately', () => {
     expect(isVideoFormat('mp4')).toBe(true)
     expect(isVideoFormat('mp3')).toBe(false)
+    expect(isVideoFormat('swf')).toBe(false)
     expect(isAudioFormat('mp3')).toBe(true)
     expect(isAudioFormat('mp4')).toBe(false)
+  })
+
+  it('classifies upload file names by video extension', () => {
+    expect(isVideoFileName('clip.mp4')).toBe(true)
+    expect(isVideoFileName('incoming_display_vp9.webm')).toBe(true)
+    expect(isVideoFileName('It_is_realme(4).mp3')).toBe(false)
+  })
+
+  it('rejects SWF as a video output plan because modern players cannot play it reliably', () => {
+    expect(() => createVideoConversionPlan('swf')).toThrow(/SWF 输出格式/)
   })
 
   it('keeps module settings dialogs constrained to their product workflow', () => {
@@ -63,6 +76,16 @@ describe('media format scopes', () => {
     expect(file.progress).toBe(0)
     expect(buildOutputName('clip.mp4', '_watermark', 'AVI')).toBe('clip_watermark.avi')
     expect(buildOutputName('clip', '_compress', 'MP4')).toBe('clip_compress.mp4')
+  })
+
+  it('shows selected custom output paths instead of a generic label only', () => {
+    const actionBar = fs.readFileSync(path.join(projectRoot, 'src', 'components', 'ActionBar.vue'), 'utf8')
+    const videoMerge = fs.readFileSync(modulePath('VideoMerge.vue'), 'utf8')
+
+    expect(actionBar).toContain('customPathLabel')
+    expect(actionBar).toContain('class="selected-path"')
+    expect(videoMerge).toContain('customPathLabel')
+    expect(videoMerge).toContain('class="selected-path"')
   })
 
   it('keeps row settings and bottom default settings separated in video modules', () => {
@@ -102,9 +125,12 @@ describe('media format scopes', () => {
     const videoMerge = fs.readFileSync(modulePath('VideoMerge.vue'), 'utf8')
     const electronMain = fs.readFileSync(path.join(projectRoot, 'electron', 'main.ts'), 'utf8')
 
+    expect(videoMerge).toContain(':extensions="VIDEO_EXTENSIONS"')
+    expect(videoMerge).toContain('isVideoFileName(fileName || filePath)')
     expect(videoMerge).toContain(':initial-settings="mergeSettings"')
     expect(videoMerge).toContain('mergeSettings.value = cloneOutputSettings(data.settings)')
     expect(videoMerge).toContain('settings: cloneOutputSettings(mergeSettings.value)')
+    expect(electronMain).toContain('assertVideoInputPaths(inputPaths)')
     expect(electronMain).toContain('settings?: VideoConversionSettings')
     expect(electronMain).toContain("createVideoConversionPlan(format || outputExtensionFromPath(outputPath, 'mp4'), settings)")
   })

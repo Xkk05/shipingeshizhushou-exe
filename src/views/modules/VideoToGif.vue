@@ -1,9 +1,9 @@
-﻿<template>
+<template>
   <div class="module-page" @dragover.prevent="onDragOver" @dragleave="onDragLeave" @drop.prevent="onDrop">
     <TopToolbar :show-url-download="true" @add-files="addFiles" @add-folder="addFolder" @add-device="showQRUpload = true" @add-url="showURLDialog = true" @clear="clearFiles" />
-    
+
     <div class="content-area">
-      <FileDropZone v-if="!files.length" @files-selected="onFilesFromDropZone" />
+      <FileDropZone v-if="!files.length" :extensions="VIDEO_EXTENSIONS" @files-selected="onFilesFromDropZone" />
       <div v-else class="file-list-wrapper">
         <SelectionToolbar
           :all-selected="allSelectableSelected"
@@ -55,8 +55,8 @@
               <el-button class="setting-btn" size="small" circle @click="openSettings(file)">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
               </el-button>
-              <el-button type="primary" size="small" class="convert-btn" :disabled="file.status === 'converting'" @click="convertToGif(file)">
-                {{ file.status === 'converting' ? $t('common.converting') : (file.status === 'completed' ? $t('common.completed') : $t('common.convert')) }}
+              <el-button :type="file.status === 'converting' ? 'danger' : 'primary'" size="small" :class="['convert-btn', { 'cancel-btn': file.status === 'converting' }]" @click="file.status === 'converting' ? cancelFile(file) : convertToGif(file)">
+                {{ file.status === 'converting' ? $t('common.cancel') : (file.status === 'completed' ? $t('common.completed') : $t('common.convert')) }}
               </el-button>
             </div>
           </div>
@@ -98,11 +98,12 @@
         <div class="output-path">
           <span class="label">{{ $t('common.outputPath') }}</span>
           <el-select v-model="outputPathType" class="path-select" @change="handlePathTypeChange">
-            <el-option :label="$t('common.videoConverterFolder')" value="default" /><el-option :label="$t('common.sameAsSource')" value="source" /><el-option :label="$t('common.customFolder')" value="custom" />
+            <el-option :label="$t('common.videoConverterFolder')" value="default" /><el-option :label="$t('common.sameAsSource')" value="source" /><el-option :label="customPathLabel" value="custom" />
           </el-select>
           <el-button class="folder-btn" @click="selectOutputDir">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="#36d1c4"><path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
           </el-button>
+          <span v-if="outputPathType === 'custom' && outputDir" class="selected-path" :title="outputDir">{{ outputDir }}</span>
         </div>
       </div>
     </div>
@@ -259,6 +260,13 @@ import { platformService } from '@/services/platformService'
 import { getWebVideoMeta } from '@/utils/webMediaMeta'
 import { useI18n } from 'vue-i18n'
 import { useSelectableFiles } from '@/composables/useSelectableFiles'
+import {
+  beginConversionRun,
+  finishCancelledConversion,
+  isConversionCancelRequested,
+  isCurrentConversionRun,
+  requestConversionCancel,
+} from '@/utils/conversionCancel'
 
 const { t } = useI18n()
 
@@ -273,6 +281,7 @@ const showQRUpload = ref(false)
 const showURLDialog = ref(false)
 const outputDir = ref('')
 const outputPathType = ref('default')
+const customPathLabel = computed(() => outputDir.value && outputPathType.value === 'custom' ? outputDir.value : t('common.customFolder'))
 const isDragging = ref(false)
 const isProcessingDrop = ref(false)
 
@@ -399,9 +408,9 @@ const formatSize = (bytes: number) => {
 
 const playVideo = async (file: any) => { if (file.path) await platformService.playVideo(file.path) }
 
-const onDragOver = (e: DragEvent) => { 
+const onDragOver = (e: DragEvent) => {
   e.preventDefault()
-  if (files.value.length) isDragging.value = true 
+  if (files.value.length) isDragging.value = true
 }
 
 const onDragLeave = (e: DragEvent) => {
@@ -416,10 +425,10 @@ const onDrop = async (e: DragEvent) => {
   e.preventDefault()
   e.stopPropagation()
   isDragging.value = false
-  
+
   // 濡傛灉鏂囦欢鍒楄〃涓虹┖锛岃 FileDropZone 澶勭悊
   if (!files.value.length) return
-  
+
   try {
     const mediaFiles = await handleDragDropEvent(e, VIDEO_EXTENSIONS)
     if (mediaFiles.length) {
@@ -437,16 +446,16 @@ const onFilesFromDropZone = (filePaths: string[]) => {
 const openSettings = (file: any) => {
   currentFile.value = file
   clipsList.value = file.clips || []
-  
+
   // 检测是否支持预览
   const format = file.format?.toLowerCase() || ''
   canPreviewVideo.value = previewableFormats.includes(format)
-  
+
   // 解析原始分辨率
   const resParts = file.resolution?.split('x') || []
   originalWidth.value = parseInt(resParts[0]) || 720
   originalHeight.value = parseInt(resParts[1]) || 1280
-  
+
   // 解析输出分辨率
   const outResParts = String(file.outputResolution || '').split(/[x×]/)
   cropSettings.width = parseInt(outResParts[0]) || Math.round(originalWidth.value * 0.375)
@@ -455,7 +464,7 @@ const openSettings = (file: any) => {
   cropSettings.quality = file.quality || 'high'
   cropSettings.fps = file.fps || 'auto'
   cropSettings.speed = file.speed || '1'
-  
+
   // 璁剧疆瑙嗛鏃堕暱锛堜粠鏂囦欢淇℃伅鑾峰彇锛岃В鏋恉uration瀛楃涓诧級
   let duration = file.endTime || 0
   if (!duration && file.duration) {
@@ -466,19 +475,19 @@ const openSettings = (file: any) => {
     }
   }
   videoDuration.value = duration || 1 // 鑷冲皯璁句负1绉掞紝閬垮厤闄や互0
-  
+
   // 初始化时间范围
   rangeStart.value = file.startTime || 0
   rangeEnd.value = file.endTime || duration || videoDuration.value
-  
+
   // 瑙ｆ瀽鏃堕棿鑼冨洿
   startTimeStr.value = formatTimeMs(rangeStart.value)
   endTimeStr.value = formatTimeMs(rangeEnd.value)
-  
+
   // 重置播放状态
   isPlaying.value = false
   currentTime.value = 0
-  
+
   showCropDialog.value = true
 }
 
@@ -521,13 +530,13 @@ const startDragHandle = (e: MouseEvent, type: 'start' | 'end') => {
   e.preventDefault()
   const slider = rangeSliderRef.value
   if (!slider) return
-  
+
   const onMove = (ev: MouseEvent) => {
     const rect = slider.getBoundingClientRect()
     let percent = (ev.clientX - rect.left) / rect.width
     percent = Math.max(0, Math.min(1, percent))
     const time = percent * videoDuration.value
-    
+
     if (type === 'start') {
       rangeStart.value = Math.min(time, rangeEnd.value - 0.1)
       startTimeStr.value = formatTimeMs(rangeStart.value)
@@ -536,12 +545,12 @@ const startDragHandle = (e: MouseEvent, type: 'start' | 'end') => {
       endTimeStr.value = formatTimeMs(rangeEnd.value)
     }
   }
-  
+
   const onUp = () => {
     document.removeEventListener('mousemove', onMove)
     document.removeEventListener('mouseup', onUp)
   }
-  
+
   document.addEventListener('mousemove', onMove)
   document.addEventListener('mouseup', onUp)
 }
@@ -550,7 +559,7 @@ const startDragPlayhead = (e: MouseEvent) => {
   e.preventDefault()
   const slider = rangeSliderRef.value
   if (!slider) return
-  
+
   const onMove = (ev: MouseEvent) => {
     const rect = slider.getBoundingClientRect()
     let percent = (ev.clientX - rect.left) / rect.width
@@ -559,12 +568,12 @@ const startDragPlayhead = (e: MouseEvent) => {
     currentTime.value = time
     seekTo(time)
   }
-  
+
   const onUp = () => {
     document.removeEventListener('mousemove', onMove)
     document.removeEventListener('mouseup', onUp)
   }
-  
+
   document.addEventListener('mousemove', onMove)
   document.addEventListener('mouseup', onUp)
 }
@@ -638,9 +647,9 @@ const addClip = () => {
   if (rangeEnd.value <= rangeStart.value) {
     return
   }
-  
+
   const clipName = currentFile.value?.name?.replace(/\.[^.]+$/, '') + `(${clipsList.value.length + 1}).gif`
-  
+
   clipsList.value.push({
     name: clipName,
     startTime: rangeStart.value,
@@ -684,7 +693,7 @@ const saveCropSettings = () => {
     currentFile.value.fps = cropSettings.fps
     currentFile.value.speed = cropSettings.speed
     currentFile.value.clips = [...clipsList.value]
-    
+
     // Reset completed or failed files so the user can re-run the export.
     if (currentFile.value.status === 'completed' || currentFile.value.status === 'error') {
       currentFile.value.status = 'pending'
@@ -787,6 +796,15 @@ const handleFilesSelected = addFilesToList
 
 const clearFiles = () => { files.value = []; clearSelection() }
 const deleteFile = (file: any) => { files.value = files.value.filter(f => f.id !== file.id); removeSelection(file) }
+const cancelFile = async (file: any) => {
+  if (file.status !== 'converting') return
+  requestConversionCancel(file)
+  try {
+    await platformService.cancelConvert(file.id)
+  } catch (error) {
+    console.error('取消 GIF 转换失败:', error)
+  }
+}
 
 const ensureGifName = (name: string) => name.toLowerCase().endsWith('.gif') ? name : `${name.replace(/\.[^.]+$/, '')}.gif`
 
@@ -823,20 +841,40 @@ const exportGifClip = async (file: any, clip?: any) => {
 
 const runGifConversion = async (file: any) => {
   if (file.status === 'converting') return false
-  file.status = 'converting'; file.progress = 0
+  const runId = beginConversionRun(file)
   try {
     const clips = Array.isArray(file.clips) ? file.clips : []
     if (clips.length > 0) {
       for (let i = 0; i < clips.length; i++) {
+        if (!isCurrentConversionRun(file, runId)) return false
+        if (isConversionCancelRequested(file, runId)) {
+          finishCancelledConversion(file)
+          return false
+        }
         await exportGifClip(file, clips[i])
+        if (!isCurrentConversionRun(file, runId)) return false
+        if (isConversionCancelRequested(file, runId)) {
+          finishCancelledConversion(file)
+          return false
+        }
         file.progress = Math.round(((i + 1) / clips.length) * 100)
       }
     } else {
       await exportGifClip(file)
     }
+    if (!isCurrentConversionRun(file, runId)) return false
+    if (isConversionCancelRequested(file, runId)) {
+      finishCancelledConversion(file)
+      return false
+    }
     file.status = 'completed'; file.progress = 100
     return true
   } catch (err) {
+    if (!isCurrentConversionRun(file, runId)) return false
+    if (isConversionCancelRequested(file, runId)) {
+      finishCancelledConversion(file)
+      return false
+    }
     file.status = 'error'
     console.error('转换失败:', err)
     return false
@@ -854,7 +892,7 @@ const convertAll = async () => {
   await checkAuthAndExecute(async () => {
     const pendingFiles = [...selectedReadyFiles.value]
     let completedCount = 0
-    for (const file of pendingFiles) { 
+    for (const file of pendingFiles) {
       if (await runGifConversion(file)) completedCount++
     }
     clearSelection()
@@ -906,7 +944,7 @@ const handleURLDownloaded = (filePath: string) => { handleFilesSelected([filePat
     .duration, .size { position: absolute; bottom: 6px; background: rgba(0,0,0,0.6); color: white; font-size: 11px; padding: 2px 6px; border-radius: 4px; }
     .duration { left: 6px; } .size { right: 6px; }
   }
-  
+
   .file-info, .output-info { flex: 1; min-width: 0;
     .filename { font-size: 14px; color: #333; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
       &.editable { display: flex; align-items: center; gap: 6px; cursor: pointer; .edit-icon { opacity: 0; transition: opacity 0.2s; } &:hover .edit-icon { opacity: 1; } }
@@ -919,12 +957,14 @@ const handleURLDownloaded = (filePath: string) => { handleFilesSelected([filePat
     }
     .status-text { font-size: 12px; margin-top: 8px; &.success { color: #36d1c4; } &.error { color: #f56c6c; } }
   }
-  
+
   .arrow { color: #ccc; font-size: 20px; padding: 0 16px; }
   .delete-btn { font-size: 20px; color: #999; position: absolute; right: 16px; top: 8px; padding: 0; min-width: auto; }
   .actions { display: flex; align-items: center; gap: 24px;
     .setting-btn { border-color: #e0e0e0; }
-    .convert-btn { background: #36d1c4; border-color: #36d1c4; border-radius: 8px; padding: 8px 24px; }
+    .convert-btn { background: #36d1c4; border-color: #36d1c4; border-radius: 8px; padding: 8px 24px;
+      &.cancel-btn { background: #c65f5f; border-color: #c65f5f; }
+    }
   }
 }
 
@@ -949,13 +989,13 @@ const handleURLDownloaded = (filePath: string) => { handleFilesSelected([filePat
   :deep(.el-dialog__header) { padding: 16px 20px; border-bottom: 1px solid #f0f0f0; }
   :deep(.el-dialog__body) { padding: 0; }
   :deep(.el-dialog__footer) { padding: 16px 20px; border-top: 1px solid #f0f0f0; }
-  
+
   .crop-content {
     display: flex; height: 580px;
-    
+
     .video-section {
       flex: 1; padding: 20px; background: #f8fffe; display: flex; flex-direction: column;
-      
+
       .video-container {
         flex: 1; background: #1a1a1a; border-radius: 8px; overflow: hidden; display: flex; align-items: center; justify-content: center;
         video { max-width: 100%; max-height: 100%; }
@@ -966,35 +1006,35 @@ const handleURLDownloaded = (filePath: string) => { handleFilesSelected([filePat
           .fallback-tip { color: #999; font-size: 13px; text-align: center; margin-top: 12px; }
         }
       }
-      
+
       .video-controls {
         padding: 12px 0;
-        
+
         .range-slider-container {
           position: relative; height: 32px; margin: 8px 0; cursor: pointer;
-          
+
           .slider-track {
             position: absolute; top: 50%; left: 0; right: 0; height: 6px;
             background: #d0d0d0; border-radius: 3px; transform: translateY(-50%);
           }
-          
+
           .slider-selection {
             position: absolute; top: 50%; height: 6px; background: rgba(147, 112, 219, 0.5);
             border-radius: 3px; transform: translateY(-50%);
           }
-          
+
           .slider-progress {
             position: absolute; top: 50%; left: 0; height: 6px;
             background: #36d1c4; border-radius: 3px; transform: translateY(-50%);
             pointer-events: none;
           }
-          
+
           .slider-handle {
             position: absolute; top: 50%; width: 6px; height: 24px;
             background: #9370db; border-radius: 3px; cursor: ew-resize;
             transform: translate(-50%, -50%); z-index: 2;
             box-shadow: 0 1px 3px rgba(0,0,0,0.2);
-            
+
             &:hover { background: #7b5fc7; }
             &::after {
               content: ''; position: absolute; top: 50%; left: 50%;
@@ -1003,13 +1043,13 @@ const handleURLDownloaded = (filePath: string) => { handleFilesSelected([filePat
               border-radius: 1px;
             }
           }
-          
+
           .slider-playhead {
             position: absolute; top: 50%; width: 4px; height: 32px;
             background: #36d1c4; border-radius: 2px; cursor: ew-resize;
             transform: translate(-50%, -50%); z-index: 3;
             box-shadow: 0 1px 4px rgba(54, 209, 196, 0.4);
-            
+
             &::before {
               content: ''; position: absolute; top: -6px; left: 50%;
               transform: translateX(-50%);
@@ -1018,14 +1058,14 @@ const handleURLDownloaded = (filePath: string) => { handleFilesSelected([filePat
             }
           }
         }
-        
+
         .time-display {
           display: flex; align-items: center; justify-content: space-between; margin-top: 8px;
           span { font-size: 13px; color: #666; font-family: monospace; }
           .play-btn { border-color: #36d1c4; }
         }
       }
-      
+
       .time-inputs {
         display: flex; align-items: center; gap: 16px; padding: 12px 0; border-bottom: 1px solid #e8e8e8;
         .time-input-group {
@@ -1038,7 +1078,7 @@ const handleURLDownloaded = (filePath: string) => { handleFilesSelected([filePat
           display: flex; align-items: center; gap: 6px;
         }
       }
-      
+
       .detail-settings {
         padding-top: 12px;
         .settings-header {
@@ -1062,21 +1102,21 @@ const handleURLDownloaded = (filePath: string) => { handleFilesSelected([filePat
         }
       }
     }
-    
+
     .clips-section {
       width: 280px; background: #fff; border-left: 1px solid #f0f0f0; display: flex; flex-direction: column;
-      
+
       .clips-header {
         padding: 16px; font-size: 14px; color: #333; font-weight: 500; border-bottom: 1px solid #f0f0f0;
       }
-      
+
       .clips-list {
         flex: 1; overflow-y: auto; padding: 12px;
-        
+
         .clip-item {
           background: #f8fffe; border: 1px solid #e8f8f6; border-radius: 8px; padding: 12px; margin-bottom: 10px;
           display: flex; justify-content: space-between; align-items: flex-start;
-          
+
           .clip-info {
             flex: 1;
             .clip-name { font-size: 13px; color: #333; margin-bottom: 8px; word-break: break-all; }
@@ -1086,13 +1126,13 @@ const handleURLDownloaded = (filePath: string) => { handleFilesSelected([filePat
               .meta-value { font-size: 11px; color: #666; }
             }
           }
-          
+
           .clip-actions {
             display: flex; flex-direction: column; gap: 4px;
             .el-button { padding: 4px; }
           }
         }
-        
+
         .empty-clips {
           text-align: center; color: #999; font-size: 13px; padding: 40px 0;
         }

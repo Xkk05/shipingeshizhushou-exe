@@ -45,6 +45,14 @@ export const useAuthCodeStore = defineStore('authCode', () => {
       isAuthorized.value = false
       return false
     } catch (err: any) {
+      const localAuthCode = authCodeService.getLocalAuthCode()
+      if (authCodeService.isAuthNetworkError(err) && localAuthCode) {
+        authCode.value = localAuthCode
+        isAuthorized.value = true
+        error.value = null
+        return true
+      }
+
       error.value = err.message || t('error.initAuthStatusFailed')
       isAuthorized.value = false
       return false

@@ -6,6 +6,7 @@ import { execSync, spawn } from 'child_process'
 import * as os from 'os'
 import { v4 as uuidv4 } from 'uuid'
 import {
+  assertSupportedVideoOutputFormat,
   createVideoConversionPlan,
   outputExtensionFromPath,
   type VideoConversionSettings,
@@ -17,8 +18,11 @@ import {
 } from './audioConversionProfiles'
 import {
   buildWatermarkFilters,
-  type FontStyleOptions,
 } from './watermarkFilters'
+import { clampProgressPercent, scaleProgressPercent } from './progress'
+import { readSwfMetadata } from './swfMetadata'
+import { resolveWatermarkFontPath } from './watermarkFonts'
+import { isVideoFileName } from '../src/utils/mediaFormats'
 
 // ==================== 机器码生成功能 ====================
 
@@ -89,30 +93,30 @@ function getBoardSerial(): string | null {
  */
 function generateMachineCode(): string {
   const hardwareInfos: string[] = []
-  
+
   // 1. CPU序列号
   const cpuInfo = getCpuInfo()
   if (cpuInfo) {
     hardwareInfos.push(cpuInfo)
   }
-  
+
   // 2. MAC地址
   const macInfo = getMacAddress()
   hardwareInfos.push(macInfo)
-  
+
   // 3. 主板序列号（Windows）
   const boardSerial = getBoardSerial()
   if (boardSerial) {
     hardwareInfos.push(boardSerial)
   }
-  
+
   // 组合所有信息并哈希
   const combined = hardwareInfos.join('|')
   const machineCode = crypto.createHash('sha256').update(combined, 'utf8').digest('hex')
-  
+
   console.log('Hardware infos:', hardwareInfos)
   console.log('Generated machine code:', machineCode)
-  
+
   return machineCode
 }
 
@@ -132,23 +136,23 @@ function getFFmpegPath(): string {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg')
     let ffmpegPath = ffmpegInstaller.path
-    
+
     console.log('Original FFmpeg path:', ffmpegPath)
     console.log('app.isPackaged:', app.isPackaged)
-    
+
     // 打包后需要替换 app.asar 为 app.asar.unpacked
     if (app.isPackaged) {
       // 使用正则替换所有 app.asar（不带 .unpacked 的）
       ffmpegPath = ffmpegPath.replace(/app\.asar(?!\.unpacked)/g, 'app.asar.unpacked')
     }
-    
+
     console.log('Final FFmpeg path:', ffmpegPath)
-    
+
     // 检查文件是否存在
       if (!fs.existsSync(ffmpegPath)) {
         console.error('FFmpeg not found at:', ffmpegPath)
       }
-    
+
     return ffmpegPath
   } catch (e) {
     console.error('Failed to get ffmpeg path:', e)
@@ -169,19 +173,19 @@ function getFFprobePath(): string {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const ffprobeInstaller = require('@ffprobe-installer/ffprobe')
     let ffprobePath = ffprobeInstaller.path
-    
+
     console.log('Original FFprobe path:', ffprobePath)
-    
+
     if (app.isPackaged) {
       ffprobePath = ffprobePath.replace(/app\.asar(?!\.unpacked)/g, 'app.asar.unpacked')
     }
-    
+
     console.log('Final FFprobe path:', ffprobePath)
-    
+
       if (!fs.existsSync(ffprobePath)) {
         console.error('FFprobe not found at:', ffprobePath)
       }
-    
+
     return ffprobePath
   } catch (e) {
     console.error('Failed to get ffprobe path:', e)
@@ -193,13 +197,13 @@ function getFFprobePath(): string {
 let ffmpegConfigured = false
 function configureFFmpeg() {
   if (ffmpegConfigured) return
-  
+
   const ffmpegPath = getFFmpegPath()
   const ffprobePath = getFFprobePath()
-  
+
   if (ffmpegPath) ffmpeg.setFfmpegPath(ffmpegPath)
   if (ffprobePath) ffmpeg.setFfprobePath(ffprobePath)
-  
+
   ffmpegConfigured = true
 }
 
@@ -224,6 +228,29 @@ const applyVideoConversionPlan = (
   return nextCommand.toFormat(plan.muxer)
 }
 
+const readSwfMetadataIfNeeded = (filePath: string) => {
+  if (outputExtensionFromPath(filePath, '') !== 'swf') return null
+
+  try {
+    return readSwfMetadata(filePath)
+  } catch (error) {
+    console.warn('SWF metadata read failed:', error)
+    return null
+  }
+}
+
+const assertSupportedVideoOutputRequest = (format: string | undefined, outputPath: string) => {
+  assertSupportedVideoOutputFormat(format)
+  assertSupportedVideoOutputFormat(outputExtensionFromPath(outputPath, ''))
+}
+
+const assertVideoInputPaths = (inputPaths: string[]) => {
+  const invalidPaths = inputPaths.filter((inputPath) => !isVideoFileName(inputPath))
+  if (invalidPaths.length) {
+    throw new Error(`视频合并仅支持视频文件，已跳过非视频文件：${invalidPaths.map((inputPath) => path.basename(inputPath)).join('、')}`)
+  }
+}
+
 const appendScaleToComplexOutput = (filters: string[], outputSize: string) => {
   const size = outputSize.match(/^(\d+)x(\d+)$/)
   if (!size || filters.length === 0) return filters
@@ -233,20 +260,80 @@ const appendScaleToComplexOutput = (filters: string[], outputSize: string) => {
   if (!/\[out\]\s*$/.test(scaledFilters[lastIndex])) return filters
 
   scaledFilters[lastIndex] = scaledFilters[lastIndex].replace(/\[out\]\s*$/, '[preout]')
-  scaledFilters.push(`[preout]scale=${size[1]}:${size[2]}[out]`)
+  scaledFilters.push(`[preout]${scaleFilterFromOutputSize(`${size[1]}x${size[2]}`)}[out]`)
 
   return scaledFilters
 }
 
 const scaleFilterFromOutputSize = (outputSize: string) => {
   const size = outputSize.match(/^(\d+)x(\d+)$/)
-  return size ? `scale=${size[1]}:${size[2]}` : ''
+  return size ? `scale=${size[1]}:${size[2]}:force_original_aspect_ratio=decrease,pad=${size[1]}:${size[2]}:(ow-iw)/2:(oh-ih)/2,setsar=1` : ''
 }
+
+const browserLikeUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
+const refererForDownloadUrl = (rawUrl: string) => {
+  try {
+    const parsedUrl = new URL(rawUrl)
+    const hostname = parsedUrl.hostname.toLowerCase()
+    if (hostname.endsWith('vjshi.com')) return 'https://www.vjshi.com/'
+    return `${parsedUrl.protocol}//${parsedUrl.host}/`
+  } catch {
+    return ''
+  }
+}
+
+const downloadHeadersForUrl = (rawUrl: string, referer = refererForDownloadUrl(rawUrl)) => {
+  let origin = ''
+  try {
+    origin = referer ? new URL(referer).origin : new URL(rawUrl).origin
+  } catch {
+    origin = ''
+  }
+
+  return {
+    'User-Agent': browserLikeUserAgent,
+    'Accept': '*/*',
+    'Accept-Encoding': 'identity',
+    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    'Connection': 'keep-alive',
+    'Referer': referer,
+    ...(origin ? { 'Origin': origin } : {}),
+    'Sec-Fetch-Dest': 'video',
+    'Sec-Fetch-Mode': 'no-cors',
+    'Sec-Fetch-Site': 'cross-site',
+  }
+}
+
+const ffmpegHeaderLines = (headers: Record<string, string>) =>
+  Object.entries(headers)
+    .filter(([, value]) => value)
+    .map(([key, value]) => `${key}: ${value}`)
+    .join('\r\n') + '\r\n'
 
 let mainWindow: BrowserWindow | null = null
 
 // 存储转换任务
 const convertTasks = new Map<string, ffmpeg.FfmpegCommand>()
+const convertTaskOutputs = new Map<string, string>()
+const cancelledConvertTasks = new Set<string>()
+
+const registerConvertTask = (id: string, command: ffmpeg.FfmpegCommand, outputPath: string) => {
+  convertTasks.set(id, command)
+  convertTaskOutputs.set(id, outputPath)
+}
+
+const clearConvertTask = (id: string) => {
+  convertTasks.delete(id)
+  convertTaskOutputs.delete(id)
+  cancelledConvertTasks.delete(id)
+}
+
+const throwIfConvertTaskCancelled = (id: string) => {
+  if (cancelledConvertTasks.has(id)) {
+    throw new Error('Conversion cancelled')
+  }
+}
 
 type AudioConversionRequest = {
   id: string
@@ -305,22 +392,22 @@ const runAudioConversionTask = (
   return new Promise((resolve, reject) => {
     const command = applyAudioConversionPlan(ffmpeg(inputPath), format, audioSettingsFromOptions(options))
 
-    convertTasks.set(id, command)
+    registerConvertTask(id, command, outputPath)
 
     command
       .on('start', (cmd: string) => console.log(`${logLabel}:`, cmd))
       .on('progress', (progress: { percent?: number }) => {
         for (const channel of progressChannels) {
-          mainWindow?.webContents.send(channel, { id, percent: progress.percent || 0 })
+          mainWindow?.webContents.send(channel, { id, percent: clampProgressPercent(progress.percent) })
         }
       })
       .on('end', () => {
-        convertTasks.delete(id)
+        clearConvertTask(id)
         resolve({ success: true, outputPath })
       })
       .on('error', (err: Error) => {
         console.error(`${logLabel} error:`, err.message)
-        convertTasks.delete(id)
+        clearConvertTask(id)
         reject(err)
       })
       .save(outputPath)
@@ -641,10 +728,10 @@ function createWindow() {
         document.body.style.display = 'none';
         document.body.offsetHeight; // 触发重排
         document.body.style.display = '';
-        
+
         // 触发窗口resize事件以确保组件正确渲染
         window.dispatchEvent(new Event('resize'));
-        
+
         // 延迟再次触发resize确保所有组件都正确渲染
         setTimeout(() => {
           window.dispatchEvent(new Event('resize'));
@@ -677,11 +764,11 @@ function createWindow() {
 
 app.whenReady().then(() => {
   createWindow()
-  
+
   // 设置应用程序图标
   if (process.platform === 'win32') {
     const iconPath = resolvePlatformIconPath()
-    
+
     // 设置应用程序图标
     if (mainWindow) {
       mainWindow.setIcon(iconPath)
@@ -780,11 +867,11 @@ ipcMain.handle('select-folder', async (_, extensions: string[]) => {
     properties: ['openDirectory']
   })
   if (result.filePaths.length === 0) return []
-  
+
   const fs = require('fs')
   const folderPath = result.filePaths[0]
   const files: string[] = []
-  
+
   // 读取文件夹中的所有文件
   const items = fs.readdirSync(folderPath)
   for (const item of items) {
@@ -804,13 +891,13 @@ ipcMain.handle('select-folder', async (_, extensions: string[]) => {
 ipcMain.handle('scan-dropped-paths', async (_, paths: string[], extensions: string[]) => {
   const fs = require('fs')
   const allFiles: string[] = []
-  
+
   // 递归扫描文件夹的函数
   const scanDirectory = (dirPath: string, maxDepth: number = 3, currentDepth: number = 0): string[] => {
     const files: string[] = []
-    
+
     if (currentDepth >= maxDepth) return files
-    
+
     try {
       const items = fs.readdirSync(dirPath)
       for (const item of items) {
@@ -834,10 +921,10 @@ ipcMain.handle('scan-dropped-paths', async (_, paths: string[], extensions: stri
     } catch (error) {
       console.warn('无法读取目录:', dirPath, error)
     }
-    
+
     return files
   }
-  
+
   for (const itemPath of paths) {
     try {
       const stat = fs.statSync(itemPath)
@@ -855,7 +942,7 @@ ipcMain.handle('scan-dropped-paths', async (_, paths: string[], extensions: stri
       console.warn('无法访问路径:', itemPath, error)
     }
   }
-  
+
   return allFiles
 })
 
@@ -878,8 +965,9 @@ ipcMain.handle('get-video-info', async (_, filePath: string) => {
       }
       const videoStream = metadata.streams.find((s: { codec_type?: string }) => s.codec_type === 'video')
       const audioStream = metadata.streams.find((s: { codec_type?: string }) => s.codec_type === 'audio')
+      const swfMetadata = readSwfMetadataIfNeeded(filePath)
       resolve({
-        duration: metadata.format.duration,
+        duration: metadata.format.duration || swfMetadata?.duration,
         size: metadata.format.size,
         bitrate: metadata.format.bit_rate,
         width: videoStream?.width,
@@ -911,15 +999,16 @@ ipcMain.handle('convert-video', async (_, options: {
     )
   }
 
+  assertSupportedVideoOutputRequest(format, outputPath)
   configureFFmpeg()
   const fs = require('fs')
-  
+
   // 确保输出目录存在
   const outputDir = path.dirname(outputPath)
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true })
   }
-  
+
   return new Promise((resolve, reject) => {
     let command = ffmpeg(inputPath)
 
@@ -933,10 +1022,10 @@ ipcMain.handle('convert-video', async (_, options: {
     if (conversionPlan.sampleRate) command = command.audioFrequency(conversionPlan.sampleRate)
     if (conversionPlan.audioChannels) command = command.audioChannels(conversionPlan.audioChannels)
     if (conversionPlan.outputOptions.length > 0) command = command.outputOptions(conversionPlan.outputOptions)
-    
+
     // 存储任务以便取消
-    convertTasks.set(id, command)
-    
+    registerConvertTask(id, command, outputPath)
+
     command
       .toFormat(conversionPlan.muxer)
       .on('start', (cmd: string) => {
@@ -945,17 +1034,17 @@ ipcMain.handle('convert-video', async (_, options: {
       .on('progress', (progress: { percent?: number; timemark?: string }) => {
         mainWindow?.webContents.send('convert-progress', {
           id,
-          percent: progress.percent || 0,
+          percent: clampProgressPercent(progress.percent),
           timemark: progress.timemark
         })
       })
       .on('end', () => {
-        convertTasks.delete(id)
+        clearConvertTask(id)
         resolve({ success: true, outputPath })
       })
       .on('error', (err: Error) => {
         console.error('FFmpeg error:', err.message)
-        convertTasks.delete(id)
+        clearConvertTask(id)
         reject(err)
       })
       .save(outputPath)
@@ -964,13 +1053,22 @@ ipcMain.handle('convert-video', async (_, options: {
 
 // 取消转换
 ipcMain.handle('cancel-convert', async (_, id: string) => {
+  cancelledConvertTasks.add(id)
   const command = convertTasks.get(id)
   if (command) {
+    const outputPath = convertTaskOutputs.get(id)
     command.kill('SIGKILL')
-    convertTasks.delete(id)
+    clearConvertTask(id)
+    if (outputPath) {
+      try {
+        require('fs').unlinkSync(outputPath)
+      } catch {
+        // 输出文件可能尚未创建，忽略清理失败。
+      }
+    }
     return true
   }
-  return false
+  return true
 })
 
 // 获取默认输出目录
@@ -984,15 +1082,15 @@ ipcMain.handle('get-video-thumbnail', async (_, filePath: string) => {
   const fs = require('fs')
   const os = require('os')
   const tempDir = path.join(os.tmpdir(), 'kunqiu-thumbnails')
-  
+
   // 确保临时目录存在
   if (!fs.existsSync(tempDir)) {
     fs.mkdirSync(tempDir, { recursive: true })
   }
-  
+
   const thumbnailName = `thumb_${Date.now()}_${Math.random().toString(36).substr(2, 9)}.jpg`
   const thumbnailPath = path.join(tempDir, thumbnailName)
-  
+
   return new Promise((resolve, reject) => {
     ffmpeg(filePath)
       .screenshots({
@@ -1033,35 +1131,39 @@ ipcMain.handle('merge-videos', async (_, options: {
   format: string
   settings?: VideoConversionSettings
 }) => {
-  configureFFmpeg()
   const { id, inputPaths, outputPath, format, settings } = options
+  assertSupportedVideoOutputRequest(format || outputExtensionFromPath(outputPath, 'mp4'), outputPath)
+  assertVideoInputPaths(inputPaths)
+  configureFFmpeg()
   const fs = require('fs')
   const os = require('os')
-  
+
   // 确保输出目录存在
   const outputDir = path.dirname(outputPath)
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true })
   }
-  
+
   // 创建临时目录
   const tempDir = path.join(os.tmpdir(), 'kunqiu-merge')
   if (!fs.existsSync(tempDir)) {
     fs.mkdirSync(tempDir, { recursive: true })
   }
-  
+
+  cancelledConvertTasks.delete(id)
   try {
     // 第一阶段：将所有视频转换为统一的中间格式（TS格式，音视频参数一致）
     const tempFiles: string[] = []
     const totalVideos = inputPaths.length
-    
+
     for (let i = 0; i < inputPaths.length; i++) {
+      throwIfConvertTaskCancelled(id)
       const inputPath = inputPaths[i]
       const tempFile = path.join(tempDir, `temp_${Date.now()}_${i}.ts`)
       tempFiles.push(tempFile)
-      
+
       await new Promise<void>((resolve, reject) => {
-        ffmpeg(inputPath)
+        const command = ffmpeg(inputPath)
           .videoCodec('libx264')
           .audioCodec('aac')
           .outputOptions([
@@ -1071,27 +1173,39 @@ ipcMain.handle('merge-videos', async (_, options: {
             '-ac', '2',              // 统一为立体声
             '-f', 'mpegts'           // 使用 MPEG-TS 格式（更适合合并）
           ])
+
+        registerConvertTask(id, command, tempFile)
+
+        command
           .on('start', (cmd: string) => {
             console.log(`Converting video ${i + 1}/${totalVideos}:`, cmd)
           })
           .on('progress', (progress: { percent?: number }) => {
             // 发送转换进度（每个视频占总进度的一部分）
-            const overallPercent = ((i + (progress.percent || 0) / 100) / totalVideos) * 50
+            const overallPercent = scaleProgressPercent(progress.percent, (i / totalVideos) * 50, 50 / totalVideos)
             mainWindow?.webContents.send('merge-progress', {
               id,
               percent: overallPercent,
               timemark: `转换第 ${i + 1}/${totalVideos} 个视频`
             })
           })
-          .on('end', () => resolve())
-          .on('error', (err: Error) => reject(err))
+          .on('end', () => {
+            clearConvertTask(id)
+            resolve()
+          })
+          .on('error', (err: Error) => {
+            clearConvertTask(id)
+            reject(err)
+          })
           .save(tempFile)
       })
+      throwIfConvertTaskCancelled(id)
     }
-    
+
     // 第二阶段：使用 concat protocol 合并所有 TS 文件
+    throwIfConvertTaskCancelled(id)
     const concatList = tempFiles.map(f => f.replace(/\\/g, '/')).join('|')
-    
+
     await new Promise<void>((resolve, reject) => {
       const conversionPlan = createVideoConversionPlan(format || outputExtensionFromPath(outputPath, 'mp4'), settings)
       const command = applyVideoConversionPlan(
@@ -1101,16 +1215,16 @@ ipcMain.handle('merge-videos', async (_, options: {
         conversionPlan,
         conversionPlan.videoCodec === 'libx264' ? ['-preset', 'veryfast', '-crf', '23'] : [],
       )
-      
-      convertTasks.set(id, command)
-      
+
+      registerConvertTask(id, command, outputPath)
+
       command
         .on('start', (cmd: string) => {
           console.log('FFmpeg merge command:', cmd)
         })
         .on('progress', (progress: { percent?: number; timemark?: string }) => {
           // 合并阶段占总进度的后50%
-          const overallPercent = 50 + (progress.percent || 0) / 2
+          const overallPercent = scaleProgressPercent(progress.percent, 50, 50)
           mainWindow?.webContents.send('merge-progress', {
             id,
             percent: overallPercent,
@@ -1118,29 +1232,31 @@ ipcMain.handle('merge-videos', async (_, options: {
           })
         })
         .on('end', () => {
-          convertTasks.delete(id)
+          clearConvertTask(id)
           resolve()
         })
         .on('error', (err: Error) => {
-          convertTasks.delete(id)
+          clearConvertTask(id)
           reject(err)
         })
         .save(outputPath)
     })
-    
+    throwIfConvertTaskCancelled(id)
+
     // 清理临时文件
     tempFiles.forEach(file => {
       try { fs.unlinkSync(file) } catch (e) { /* ignore */ }
     })
-    
+
     return { success: true, outputPath }
-    
+
   } catch (error) {
     // 清理临时文件
     const tempFiles = fs.readdirSync(tempDir).filter((f: string) => f.startsWith('temp_'))
     tempFiles.forEach((file: string) => {
       try { fs.unlinkSync(path.join(tempDir, file)) } catch (e) { /* ignore */ }
     })
+    clearConvertTask(id)
     throw error
   }
 })
@@ -1164,15 +1280,16 @@ ipcMain.handle('compress-video', async (_, options: {
   sampleRate?: string
   channels?: string
 }) => {
-  configureFFmpeg()
   const { id, inputPath, outputPath, format, quality, mode, resolution, width, height, videoCodec, audioCodec, videoBitrate, frameRate, audioBitrate, sampleRate, channels } = options
+  assertSupportedVideoOutputRequest(format || outputExtensionFromPath(outputPath, 'mp4'), outputPath)
+  configureFFmpeg()
   const fs = require('fs')
-  
+
   const outputDir = path.dirname(outputPath)
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true })
   }
-  
+
   const sourceInfo: any = await new Promise((resolve) => {
     ffmpeg.ffprobe(inputPath, (_err: Error | null, metadata: FfprobeData) => {
       const videoStream = metadata?.streams?.find((s: { codec_type?: string }) => s.codec_type === 'video')
@@ -1225,16 +1342,23 @@ ipcMain.handle('compress-video', async (_, options: {
 
     let command = applyVideoConversionPlan(ffmpeg(inputPath), conversionPlan, outputOptions)
 
-    convertTasks.set(id, command)
+    registerConvertTask(id, command, outputPath)
 
     command
       .on('start', (cmd: string) => console.log(aggressive ? 'Compress retry command:' : 'Compress command:', cmd))
       .on('progress', (progress: { percent?: number }) => {
-        const percent = aggressive ? 50 + ((progress.percent || 0) / 2) : Math.min(progress.percent || 0, 50)
-        mainWindow?.webContents.send('compress-progress', { id, percent })
+        const phasePercent = clampProgressPercent(progress.percent)
+        const percent = scaleProgressPercent(phasePercent, aggressive ? 50 : 0, 50)
+        let outputSize = 0
+        try {
+          outputSize = fs.existsSync(outputPath) ? fs.statSync(outputPath).size : 0
+        } catch (error) {
+          outputSize = 0
+        }
+        mainWindow?.webContents.send('compress-progress', { id, percent, outputSize, phasePercent })
       })
       .on('end', () => {
-        convertTasks.delete(id)
+        clearConvertTask(id)
         try {
           resolve({ outputSize: fs.statSync(outputPath).size })
         } catch (error) {
@@ -1242,7 +1366,7 @@ ipcMain.handle('compress-video', async (_, options: {
         }
       })
       .on('error', (err: Error) => {
-        convertTasks.delete(id)
+        clearConvertTask(id)
         reject(err)
       })
       .save(outputPath)
@@ -1313,15 +1437,15 @@ ipcMain.handle('video-to-gif', async (_, options: {
   configureFFmpeg()
   const { id, inputPath, outputPath, fps = 10, width = 480, startTime, duration, speed = 1 } = options
   const fs = require('fs')
-  
+
   const outputDir = path.dirname(outputPath)
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true })
   }
-  
+
   return new Promise((resolve, reject) => {
     let command = ffmpeg(inputPath)
-    
+
     if (startTime !== undefined) command = command.setStartTime(startTime)
     if (duration !== undefined) command = command.setDuration(duration)
 
@@ -1333,21 +1457,21 @@ ipcMain.handle('video-to-gif', async (_, options: {
     ]
 
     command = command.outputOptions([`-vf ${filters.join(',')}`])
-    
-    convertTasks.set(id, command)
-    
+
+    registerConvertTask(id, command, outputPath)
+
     command
       .toFormat('gif')
       .on('start', (cmd: string) => console.log('GIF command:', cmd))
       .on('progress', (progress: { percent?: number }) => {
-        mainWindow?.webContents.send('gif-progress', { id, percent: progress.percent || 0 })
+        mainWindow?.webContents.send('gif-progress', { id, percent: clampProgressPercent(progress.percent) })
       })
       .on('end', () => {
-        convertTasks.delete(id)
+        clearConvertTask(id)
         resolve({ success: true, outputPath })
       })
       .on('error', (err: Error) => {
-        convertTasks.delete(id)
+        clearConvertTask(id)
         reject(err)
       })
       .save(outputPath)
@@ -1377,6 +1501,8 @@ ipcMain.handle('add-watermark', async (_, options: {
     actualX?: number
     actualY?: number
     actualFontSize?: number
+    imageWidth?: number
+    imageHeight?: number
     startTime?: number
     endTime?: number
   }>
@@ -1386,82 +1512,24 @@ ipcMain.handle('add-watermark', async (_, options: {
     height?: number
   }
 }) => {
-  configureFFmpeg()
   const { id, inputPath, outputPath, watermarks, settings } = options
+  assertSupportedVideoOutputRequest(outputExtensionFromPath(outputPath, 'mp4'), outputPath)
+  configureFFmpeg()
   const fs = require('fs')
-  
+
   const outputDir = path.dirname(outputPath)
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true })
   }
-  
-  // 获取系统字体路径（支持中文，并尽量匹配加粗/斜体样式）
-  const getSystemFontPath = (fontFamily?: string, style: FontStyleOptions = {}): string => {
-    type FontCandidates = {
-      regular: string[]
-      bold?: string[]
-      italic?: string[]
-      boldItalic?: string[]
-    }
 
-    const windowsFontMap: Record<string, FontCandidates> = {
-      'Microsoft YaHei': {
-        regular: ['C:\\Windows\\Fonts\\msyh.ttc'],
-        bold: ['C:\\Windows\\Fonts\\msyhbd.ttc', 'C:\\Windows\\Fonts\\msyh.ttc'],
-      },
-      '微软雅黑': {
-        regular: ['C:\\Windows\\Fonts\\msyh.ttc'],
-        bold: ['C:\\Windows\\Fonts\\msyhbd.ttc', 'C:\\Windows\\Fonts\\msyh.ttc'],
-      },
-      'SimSun': { regular: ['C:\\Windows\\Fonts\\simsun.ttc', 'C:\\Windows\\Fonts\\SIMSUN.TTC'] },
-      '宋体': { regular: ['C:\\Windows\\Fonts\\simsun.ttc', 'C:\\Windows\\Fonts\\SIMSUN.TTC'] },
-      'SimHei': { regular: ['C:\\Windows\\Fonts\\simhei.ttf', 'C:\\Windows\\Fonts\\SIMHEI.TTF'] },
-      '黑体': { regular: ['C:\\Windows\\Fonts\\simhei.ttf', 'C:\\Windows\\Fonts\\SIMHEI.TTF'] },
-      Arial: {
-        regular: ['C:\\Windows\\Fonts\\arial.ttf', 'C:\\Windows\\Fonts\\simhei.ttf', 'C:\\Windows\\Fonts\\msyh.ttc'],
-        bold: ['C:\\Windows\\Fonts\\arialbd.ttf', 'C:\\Windows\\Fonts\\simhei.ttf', 'C:\\Windows\\Fonts\\msyhbd.ttc'],
-        italic: ['C:\\Windows\\Fonts\\ariali.ttf', 'C:\\Windows\\Fonts\\arial.ttf', 'C:\\Windows\\Fonts\\simhei.ttf'],
-        boldItalic: ['C:\\Windows\\Fonts\\arialbi.ttf', 'C:\\Windows\\Fonts\\arialbd.ttf', 'C:\\Windows\\Fonts\\simhei.ttf'],
-      },
-    }
-
-    const checkFontExists = (paths: string[]): string | null => {
-      for (const p of paths) {
-        if (fs.existsSync(p)) return p
-      }
-      return null
-    }
-
-    const candidates = fontFamily && windowsFontMap[fontFamily] ? windowsFontMap[fontFamily] : windowsFontMap.Arial
-    const styledCandidates = style.bold && style.italic
-      ? candidates.boldItalic
-      : style.bold
-        ? candidates.bold
-        : style.italic
-          ? candidates.italic
-          : undefined
-    const fontPath = checkFontExists([...(styledCandidates || []), ...candidates.regular])
-    if (fontPath) return fontPath
-
-    const defaultFontPaths = [
-      'C:\\Windows\\Fonts\\simhei.ttf',
-      'C:\\Windows\\Fonts\\SIMHEI.TTF',
-      'C:\\Windows\\Fonts\\msyh.ttc',
-      'C:\\Windows\\Fonts\\msyhbd.ttc',
-      'C:\\Windows\\Fonts\\simsun.ttc',
-      'C:\\Windows\\Fonts\\SIMSUN.TTC',
-    ]
-
-    return checkFontExists(defaultFontPaths) || 'C:\\Windows\\Fonts\\arial.ttf'
-  }
   const conversionPlan = createVideoConversionPlan(outputExtensionFromPath(outputPath, 'mp4'), settings)
-  
+
   return new Promise((resolve, reject) => {
     let command = ffmpeg(inputPath)
     let outputSizeHandledInFilters = false
-    
+
     if (watermarks && watermarks.length > 0) {
-      const { filters, imagePaths } = buildWatermarkFilters(watermarks, getSystemFontPath)
+      const { filters, imagePaths } = buildWatermarkFilters(watermarks, resolveWatermarkFontPath)
       imagePaths.forEach((imagePath) => {
         command = command.input(imagePath)
       })
@@ -1473,27 +1541,27 @@ ipcMain.handle('add-watermark', async (_, options: {
         command = command.outputOptions(['-map [out]', '-map 0:a?'])
       }
     }
-    
+
     command = applyVideoConversionPlan(
       command,
       conversionPlan,
       [],
       { skipOutputSize: outputSizeHandledInFilters },
     )
-    convertTasks.set(id, command)
+    registerConvertTask(id, command, outputPath)
 
     command
       .on('start', (cmd: string) => console.log('Watermark command:', cmd))
       .on('progress', (progress: { percent?: number }) => {
-        mainWindow?.webContents.send('watermark-progress', { id, percent: progress.percent || 0 })
+        mainWindow?.webContents.send('watermark-progress', { id, percent: clampProgressPercent(progress.percent) })
       })
       .on('end', () => {
-        convertTasks.delete(id)
+        clearConvertTask(id)
         resolve({ success: true, outputPath })
       })
       .on('error', (err: Error) => {
         console.error('Watermark error:', err.message)
-        convertTasks.delete(id)
+        clearConvertTask(id)
         reject(err)
       })
       .save(outputPath)
@@ -1519,15 +1587,16 @@ ipcMain.handle('remove-watermark', async (_, options: {
     height?: number
   }
 }) => {
-  configureFFmpeg()
   const { id, inputPath, outputPath, areas, mode, fillColor, settings } = options
+  assertSupportedVideoOutputRequest(outputExtensionFromPath(outputPath, 'mp4'), outputPath)
+  configureFFmpeg()
   const fs = require('fs')
-  
+
   const outputDir = path.dirname(outputPath)
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true })
   }
-  
+
   // 先获取视频信息以确保坐标在有效范围内
   const videoInfo: any = await new Promise((resolve, reject) => {
     ffmpeg.ffprobe(inputPath, (err: Error | null, metadata: FfprobeData) => {
@@ -1543,15 +1612,15 @@ ipcMain.handle('remove-watermark', async (_, options: {
     })
   })
   const conversionPlan = createVideoConversionPlan(outputExtensionFromPath(outputPath, 'mp4'), settings)
-  
+
   return new Promise((resolve, reject) => {
     let command = ffmpeg(inputPath)
     let outputSizeHandledInFilters = false
-    
+
     if (areas && areas.length > 0) {
       // 构建滤镜字符串
       let filterStr = ''
-      
+
       if (mode === 'blur') {
         // 使用 boxblur + overlay 方式实现区域模糊
         // 这种方式兼容性更好
@@ -1561,7 +1630,7 @@ ipcMain.handle('remove-watermark', async (_, options: {
           const w = Math.max(10, Math.min(Math.round(area.width), videoInfo.width - x))
           const h = Math.max(10, Math.min(Math.round(area.height), videoInfo.height - y))
           const blurRadius = Math.max(1, Math.min(8, Math.floor(Math.min(w, h) / 4)))
-          
+
           if (idx === 0) {
             // 第一个区域：从原视频裁剪区域，模糊后叠加回去
             filterStr = `[0:v]crop=${w}:${h}:${x}:${y},boxblur=${blurRadius}:2[blur0];[0:v][blur0]overlay=${x}:${y}[v0]`
@@ -1570,11 +1639,11 @@ ipcMain.handle('remove-watermark', async (_, options: {
             filterStr += `;[v${idx-1}]crop=${w}:${h}:${x}:${y},boxblur=${blurRadius}:2[blur${idx}];[v${idx-1}][blur${idx}]overlay=${x}:${y}[v${idx}]`
           }
         })
-        
+
         // 最后一个输出重命名为 out
         const lastIdx = areas.length - 1
         filterStr = filterStr.replace(`[v${lastIdx}]`, '[out]')
-        
+
         const outputFilters = appendScaleToComplexOutput([filterStr], conversionPlan.outputSize)
         outputSizeHandledInFilters = outputFilters.length > 1
         command = command.complexFilter(outputFilters)
@@ -1583,16 +1652,16 @@ ipcMain.handle('remove-watermark', async (_, options: {
         // 使用 drawbox 滤镜（纯色填充）
         const color = fillColor?.replace('#', '') || '000000'
         const filters: string[] = []
-        
+
         areas.forEach((area) => {
           const x = Math.max(0, Math.round(area.x))
           const y = Math.max(0, Math.round(area.y))
           const w = Math.max(10, Math.round(area.width))
           const h = Math.max(10, Math.round(area.height))
-          
+
           filters.push(`drawbox=x=${x}:y=${y}:w=${w}:h=${h}:color=0x${color}:t=fill`)
         })
-        
+
         const scaleFilter = scaleFilterFromOutputSize(conversionPlan.outputSize)
         if (scaleFilter) {
           filters.push(scaleFilter)
@@ -1602,27 +1671,27 @@ ipcMain.handle('remove-watermark', async (_, options: {
         command = command.videoFilters(filters)
       }
     }
-    
+
     command = applyVideoConversionPlan(
       command,
       conversionPlan,
       [],
       { skipOutputSize: outputSizeHandledInFilters },
     )
-    convertTasks.set(id, command)
+    registerConvertTask(id, command, outputPath)
 
     command
       .on('start', (cmd: string) => console.log('Remove watermark command:', cmd))
       .on('progress', (progress: { percent?: number }) => {
-        mainWindow?.webContents.send('watermark-progress', { id, percent: progress.percent || 0 })
+        mainWindow?.webContents.send('watermark-progress', { id, percent: clampProgressPercent(progress.percent) })
       })
       .on('end', () => {
-        convertTasks.delete(id)
+        clearConvertTask(id)
         resolve({ success: true, outputPath })
       })
       .on('error', (err: Error) => {
         console.error('Remove watermark error:', err.message)
-        convertTasks.delete(id)
+        clearConvertTask(id)
         reject(err)
       })
       .save(outputPath)
@@ -1670,15 +1739,15 @@ ipcMain.handle('start-upload-server', async () => {
   if (uploadServer) {
     return { success: true, port: uploadServerPort, ip: getLocalIP() }
   }
-  
+
   const fs = require('fs')
   const uploadDir = path.join(os.tmpdir(), 'kunqiu-uploads')
   if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true })
   }
-  
+
   const app = express()
-  
+
   // 配置文件上传
   const storage = multer.diskStorage({
     destination: uploadDir,
@@ -1688,7 +1757,7 @@ ipcMain.handle('start-upload-server', async () => {
     }
   })
   const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 * 1024 } }) // 5GB限制
-  
+
   // 上传页面HTML
   const uploadPageHTML = `
 <!DOCTYPE html>
@@ -1761,45 +1830,45 @@ ipcMain.handle('start-upload-server', async () => {
     const uploadForm = document.getElementById('uploadForm');
     const success = document.getElementById('success');
     let files = [];
-    
+
     dropArea.addEventListener('click', () => fileInput.click());
     dropArea.addEventListener('dragover', (e) => { e.preventDefault(); dropArea.classList.add('dragover'); });
     dropArea.addEventListener('dragleave', () => dropArea.classList.remove('dragover'));
     dropArea.addEventListener('drop', (e) => { e.preventDefault(); dropArea.classList.remove('dragover'); addFiles(e.dataTransfer.files); });
     fileInput.addEventListener('change', () => addFiles(fileInput.files));
-    
+
     function addFiles(newFiles) {
       for (let f of newFiles) files.push(f);
       renderFileList();
     }
-    
+
     function removeFile(idx) {
       files.splice(idx, 1);
       renderFileList();
     }
-    
+
     function formatSize(bytes) {
       if (bytes < 1024) return bytes + 'B';
       if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + 'KB';
       if (bytes < 1024*1024*1024) return (bytes/1024/1024).toFixed(1) + 'MB';
       return (bytes/1024/1024/1024).toFixed(2) + 'GB';
     }
-    
+
     function renderFileList() {
-      fileList.innerHTML = files.map((f, i) => 
+      fileList.innerHTML = files.map((f, i) =>
         '<div class="file-item"><span class="name">' + f.name + '</span><span class="size">' + formatSize(f.size) + '</span><span class="remove" onclick="removeFile(' + i + ')">×</span></div>'
       ).join('');
       uploadBtn.disabled = files.length === 0;
     }
-    
+
     uploadBtn.addEventListener('click', async () => {
       if (files.length === 0) return;
       uploadForm.style.display = 'none';
       progress.style.display = 'block';
-      
+
       const formData = new FormData();
       files.forEach(f => formData.append('files', f));
-      
+
       const xhr = new XMLHttpRequest();
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable) {
@@ -1830,23 +1899,23 @@ ipcMain.handle('start-upload-server', async () => {
 </body>
 </html>
   `
-  
+
   app.get('/', (_req: express.Request, res: express.Response) => {
     res.send(uploadPageHTML)
   })
-  
+
   app.post('/upload', upload.array('files'), (req: express.Request, res: express.Response) => {
     const uploadedFiles = (req.files as Express.Multer.File[]) || []
     const filePaths = uploadedFiles.map(f => f.path)
-    
+
     // 通知渲染进程有新文件上传
     if (mainWindow && filePaths.length > 0) {
       mainWindow.webContents.send('files-uploaded', filePaths)
     }
-    
+
     res.json({ success: true, files: filePaths })
   })
-  
+
   return new Promise((resolve, reject) => {
     uploadServer = app.listen(uploadServerPort, '0.0.0.0', () => {
       console.log(`Upload server started on port ${uploadServerPort}`)
@@ -1899,30 +1968,31 @@ ipcMain.handle('download-video-url', async (_, options: { url: string; name?: st
   const fs = require('fs')
   const https = require('https')
   const http = require('http')
-  const { URL } = require('url')
-  
+  const requestReferer = refererForDownloadUrl(url)
+  const requestHeaders = downloadHeadersForUrl(url, requestReferer)
+
   console.log('=== URL Download Start ===')
   console.log('URL:', url)
   console.log('Name:', name)
-  
+
   // 生成输出文件名
   const timestamp = Date.now()
   const fileName = name ? `${name}.mp4` : `video_${timestamp}.mp4`
   const outputDir = path.join(os.tmpdir(), 'kunqiu-downloads')
-  
+
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true })
   }
-  
+
   const outputPath = path.join(outputDir, fileName)
   const tempPath = path.join(outputDir, `temp_${timestamp}.mp4`)
-  
+
   console.log('Output path:', outputPath)
   console.log('Temp path:', tempPath)
-  
+
   // 判断是否是 m3u8 链接
   const isM3U8 = url.toLowerCase().includes('.m3u8') || url.toLowerCase().includes('m3u8')
-  
+
   // 如果是 M3U8，使用 FFmpeg 直接处理
   if (isM3U8) {
     console.log('Detected M3U8 format, using FFmpeg directly')
@@ -1930,7 +2000,8 @@ ipcMain.handle('download-video-url', async (_, options: { url: string; name?: st
       const command = ffmpeg(url)
         .inputOptions([
           '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
-          '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          '-user_agent', browserLikeUserAgent,
+          '-headers', ffmpegHeaderLines(requestHeaders),
         ])
         .videoCodec('libx264')
         .audioCodec('aac')
@@ -1939,7 +2010,7 @@ ipcMain.handle('download-video-url', async (_, options: { url: string; name?: st
         .on('start', (cmd: string) => console.log('M3U8 download command:', cmd))
         .on('progress', (progress: { percent?: number; timemark?: string }) => {
           mainWindow?.webContents.send('url-download-progress', {
-            percent: progress.percent || 0,
+            percent: clampProgressPercent(progress.percent),
             timemark: progress.timemark || ''
           })
         })
@@ -1954,17 +2025,17 @@ ipcMain.handle('download-video-url', async (_, options: { url: string; name?: st
         .save(outputPath)
     })
   }
-  
+
   // 对于普通视频链接，使用 Node.js 下载
-  const downloadWithNodeJS = (downloadUrl: string, destPath: string, maxRedirects = 5): Promise<void> => {
+  const downloadWithNodeJS = (downloadUrl: string, destPath: string, maxRedirects = 5, referer = requestReferer): Promise<void> => {
     return new Promise((resolve, reject) => {
       if (maxRedirects <= 0) {
         reject(new Error('重定向次数过多'))
         return
       }
-      
+
       console.log('Downloading with Node.js:', downloadUrl)
-      
+
       let parsedUrl: URL
       try {
         parsedUrl = new URL(downloadUrl)
@@ -1972,28 +2043,23 @@ ipcMain.handle('download-video-url', async (_, options: { url: string; name?: st
         reject(new Error('无效的URL格式'))
         return
       }
-      
+
       const protocol = parsedUrl.protocol === 'https:' ? https : http
       const requestOptions = {
         hostname: parsedUrl.hostname,
         port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
         path: parsedUrl.pathname + parsedUrl.search,
         method: 'GET',
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': '*/*',
-          'Accept-Encoding': 'identity',
-          'Connection': 'keep-alive'
-        },
+        headers: downloadHeadersForUrl(downloadUrl, referer),
         timeout: 30000
       }
-      
+
       console.log('Request options:', JSON.stringify(requestOptions, null, 2))
-      
+
       const request = protocol.request(requestOptions, (response: any) => {
         console.log('Response status:', response.statusCode)
         console.log('Response headers:', JSON.stringify(response.headers, null, 2))
-        
+
         // 处理重定向
         if (response.statusCode === 301 || response.statusCode === 302 || response.statusCode === 303 || response.statusCode === 307 || response.statusCode === 308) {
           const redirectUrl = response.headers.location
@@ -2001,7 +2067,7 @@ ipcMain.handle('download-video-url', async (_, options: { url: string; name?: st
             reject(new Error('重定向URL为空'))
             return
           }
-          
+
           // 处理相对URL
           let fullRedirectUrl = redirectUrl
           if (redirectUrl.startsWith('/')) {
@@ -2009,36 +2075,36 @@ ipcMain.handle('download-video-url', async (_, options: { url: string; name?: st
           } else if (!redirectUrl.startsWith('http')) {
             fullRedirectUrl = `${parsedUrl.protocol}//${parsedUrl.host}/${redirectUrl}`
           }
-          
+
           console.log('Redirecting to:', fullRedirectUrl)
-          downloadWithNodeJS(fullRedirectUrl, destPath, maxRedirects - 1)
+          downloadWithNodeJS(fullRedirectUrl, destPath, maxRedirects - 1, referer)
             .then(resolve)
             .catch(reject)
           return
         }
-        
+
         if (response.statusCode !== 200) {
           reject(new Error(`服务器返回错误: HTTP ${response.statusCode}`))
           return
         }
-        
+
         const totalSize = parseInt(response.headers['content-length'] || '0', 10)
         let downloadedSize = 0
-        
+
         console.log('Total size:', totalSize)
-        
+
         const file = fs.createWriteStream(destPath)
-        
+
         response.on('data', (chunk: Buffer) => {
           downloadedSize += chunk.length
           if (totalSize > 0) {
-            const percent = Math.round((downloadedSize / totalSize) * 100)
+            const percent = clampProgressPercent((downloadedSize / totalSize) * 100)
             mainWindow?.webContents.send('url-download-progress', { percent, timemark: '' })
           }
         })
-        
+
         response.pipe(file)
-        
+
         file.on('finish', () => {
           file.close()
           console.log('Download finished, size:', downloadedSize)
@@ -2048,13 +2114,13 @@ ipcMain.handle('download-video-url', async (_, options: { url: string; name?: st
           }
           resolve()
         })
-        
+
         file.on('error', (err: Error) => {
           console.error('File write error:', err)
           try { fs.unlinkSync(destPath) } catch (e) { /* ignore */ }
           reject(new Error('文件写入失败: ' + err.message))
         })
-        
+
         response.on('error', (err: Error) => {
           console.error('Response error:', err)
           file.close()
@@ -2062,35 +2128,35 @@ ipcMain.handle('download-video-url', async (_, options: { url: string; name?: st
           reject(new Error('下载响应错误: ' + err.message))
         })
       })
-      
+
       request.on('error', (err: Error) => {
         console.error('Request error:', err)
         reject(new Error('网络请求失败: ' + err.message))
       })
-      
+
       request.on('timeout', () => {
         console.error('Request timeout')
         request.destroy()
         reject(new Error('请求超时'))
       })
-      
+
       request.end()
     })
   }
-  
+
   try {
     // 下载文件
     await downloadWithNodeJS(url, tempPath)
     console.log('File downloaded successfully')
-    
+
     // 检查文件是否存在且有内容
     const stats = fs.statSync(tempPath)
     console.log('Downloaded file size:', stats.size)
-    
+
     if (stats.size === 0) {
       throw new Error('下载的文件为空')
     }
-    
+
     // 用 FFmpeg 转换（确保格式正确）
     console.log('Converting with FFmpeg...')
     await new Promise<void>((resolve, reject) => {
@@ -2113,7 +2179,7 @@ ipcMain.handle('download-video-url', async (_, options: { url: string; name?: st
         })
         .save(outputPath)
     })
-    
+
     console.log('=== URL Download Complete ===')
     console.log('Output file:', outputPath)
     return { success: true, filePath: outputPath }
@@ -2148,7 +2214,7 @@ ipcMain.handle('start-updater', async (_, { url, hash, version }) => {
   const fs = require('fs')
   const appDir = path.dirname(app.getPath('exe'))
   const exeName = path.basename(app.getPath('exe'))
-  const updaterPath = app.isPackaged 
+  const updaterPath = app.isPackaged
     ? path.join(process.resourcesPath, 'updater.exe')
     : path.join(app.getAppPath(), 'public', 'updater.exe')
 

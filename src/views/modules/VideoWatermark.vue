@@ -2,7 +2,7 @@
   <!-- VideoWatermark v3 -->
   <div class="module-page" @dragover.prevent="onDragOver" @dragleave="onDragLeave" @drop.prevent="onDrop">
     <TopToolbar :show-url-download="true" @add-files="addFiles" @add-folder="addFolder" @add-device="showQRUpload = true" @add-url="showURLDialog = true" @clear="clearFiles" />
-    
+
     <div class="content-area">
       <FileDropZone v-if="!files.length" @files-selected="onFilesFromDropZone" />
       <div v-else class="file-list-wrapper">
@@ -69,8 +69,8 @@
                 <el-button class="setting-btn" size="small" circle @click="openSettings(file)">
                   <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
                 </el-button>
-                <el-button type="primary" size="small" class="process-btn" :disabled="file.status === 'converting'" @click="processFile(file)">
-                  {{ file.status === 'converting' ? $t('common.processing') : $t('common.process') }}
+                <el-button :type="file.status === 'converting' ? 'danger' : 'primary'" size="small" :class="['process-btn', { 'cancel-btn': file.status === 'converting' }]" @click="file.status === 'converting' ? cancelFile(file) : processFile(file)">
+                  {{ file.status === 'converting' ? $t('common.cancel') : $t('common.process') }}
                 </el-button>
               </div>
               <span class="delete-btn" @click="deleteFile(file)">×</span>
@@ -108,18 +108,18 @@
               <template v-for="(wm, idx) in watermarkList" :key="idx">
                 <template v-if="wm.position === 'tile'">
                   <div v-for="(pos, tileIdx) in getTilePositions(wm)" :key="`tile-${idx}-${tileIdx}`" class="watermark-preview tile-item" :style="getTileWatermarkStyle(wm, pos)">
-                    <img v-if="wm.type === 'image'" :src="wm.src" :style="{ width: wm.scale + '%' }" />
+                    <img v-if="wm.type === 'image'" :src="wm.src" :style="getImageWatermarkStyle(wm)" @load="rememberImageSize($event, wm)" />
                     <span v-else class="text-watermark" :style="getTextWatermarkStyle(wm)">{{ wm.text }}</span>
                   </div>
                 </template>
                 <template v-else-if="wm.position === 'grid'">
                   <div v-for="(pos, gridIdx) in getGridPositions()" :key="`grid-${idx}-${gridIdx}`" class="watermark-preview grid-item" :style="getGridWatermarkStyle(wm, pos)">
-                    <img v-if="wm.type === 'image'" :src="wm.src" :style="{ width: wm.scale + '%' }" />
+                    <img v-if="wm.type === 'image'" :src="wm.src" :style="getImageWatermarkStyle(wm)" @load="rememberImageSize($event, wm)" />
                     <span v-else class="text-watermark" :style="getTextWatermarkStyle(wm)">{{ wm.text }}</span>
                   </div>
                 </template>
                 <div v-else class="watermark-preview custom-item" :class="{ selected: selectedWatermark === idx }" :style="getWatermarkStyle(wm)" @mousedown="startDrag($event, wm, idx)">
-                  <img v-if="wm.type === 'image'" :src="wm.src" :style="{ width: wm.scale + '%' }" />
+                  <img v-if="wm.type === 'image'" :src="wm.src" :style="getImageWatermarkStyle(wm)" @load="rememberImageSize($event, wm)" />
                   <span v-else class="text-watermark" :style="getTextWatermarkStyle(wm)">{{ wm.text }}</span>
                   <div class="selection-box" v-if="selectedWatermark === idx">
                     <div class="corner top-left"></div><div class="corner top-right"></div><div class="corner bottom-left"></div><div class="corner bottom-right"></div>
@@ -282,11 +282,24 @@ import { platformService } from '@/services/platformService'
 import { getWebVideoMeta } from '@/utils/webMediaMeta'
 import { useSelectableFiles } from '@/composables/useSelectableFiles'
 import {
+  beginConversionRun,
+  finishCancelledConversion,
+  isConversionCancelRequested,
+  isCurrentConversionRun,
+  requestConversionCancel,
+} from '@/utils/conversionCancel'
+import {
   buildOutputName,
   isFileOutputCustomized,
   markFileOutputCustomized,
   resetFileOutputStatus,
 } from '@/utils/outputSettings'
+import {
+  gridLayout,
+  imageTileLayout,
+  layoutPositions,
+  textTileLayout,
+} from '@/utils/watermarkLayout'
 
 const { t } = useI18n()
 
@@ -417,9 +430,9 @@ const watermarkTimeLabel = (wm: any) => `${wm.startTimeStr || formatTime(wm.star
 
 const playVideo = async (file: any) => { if (file.path) await platformService.playVideo(file.path) }
 
-const onDragOver = (e: DragEvent) => { 
+const onDragOver = (e: DragEvent) => {
   e.preventDefault()
-  if (files.value.length) isDragging.value = true 
+  if (files.value.length) isDragging.value = true
 }
 
 const onDragLeave = (e: DragEvent) => {
@@ -434,10 +447,10 @@ const onDrop = async (e: DragEvent) => {
   e.preventDefault()
   e.stopPropagation()
   isDragging.value = false
-  
+
   // 如果文件列表为空，让 FileDropZone 处理
   if (!files.value.length) return
-  
+
   try {
     const mediaFiles = await handleDragDropEvent(e, VIDEO_EXTENSIONS)
     if (mediaFiles.length) {
@@ -484,6 +497,15 @@ const handleFilesSelected = addFilesToList
 
 const clearFiles = () => { files.value = []; clearSelection() }
 const deleteFile = (file: any) => { files.value = files.value.filter(f => f.id !== file.id); removeSelection(file) }
+const cancelFile = async (file: any) => {
+  if (file.status !== 'converting') return
+  requestConversionCancel(file, { clearErrorMessage: true })
+  try {
+    await platformService.cancelConvert(file.id)
+  } catch (error) {
+    console.error('取消水印处理失败:', error)
+  }
+}
 const openSettings = (file?: any) => {
   currentEditingSettingsFile.value = file || null
   initialSettingsForDialog.value = file ? cloneSettings(file.settings || watermarkSettings.value) : cloneSettings(watermarkSettings.value)
@@ -532,11 +554,40 @@ const removeWatermark = (idx: number) => { watermarkList.value.splice(idx, 1); i
 const clearWatermarks = () => { watermarkList.value = []; selectedWatermark.value = null }
 
 const getWatermarkStyle = (wm: any) => ({ left: wm.x + 'px', top: wm.y + 'px', transform: `rotate(${wm.rotation}deg)`, opacity: wm.opacity / 100 })
-const getTextWatermarkStyle = (wm: any) => ({ fontSize: (wm.fontSize || 24) + 'px', fontFamily: wm.fontFamily || 'Arial', fontWeight: wm.bold ? 'bold' : 'normal', fontStyle: wm.italic ? 'italic' : 'normal', textDecoration: wm.underline ? 'underline' : 'none' })
-const getTilePositions = (wm: any) => { const positions: { x: number; y: number }[] = []; const containerWidth = videoSize.value.width || 400, containerHeight = videoSize.value.height || 300; const wmWidth = wm.type === 'image' ? (wm.scale / 100) * 120 : (wm.scale / 100) * 100, wmHeight = wm.type === 'image' ? (wm.scale / 100) * 60 : 30; const spacingX = wmWidth + 20, spacingY = wmHeight + 30; for (let y = 10; y < containerHeight; y += spacingY) { for (let x = 10; x < containerWidth; x += spacingX) { positions.push({ x, y }) } }; return positions }
+const previewFontFamily = (fontFamily?: string) => {
+  const selected = fontFamily || 'Arial'
+  if (selected === 'Arial') return 'Arial, "Microsoft YaHei", "SimHei", sans-serif'
+  if (selected === 'SimSun' || selected === '宋体') return `${selected}, "Microsoft YaHei", serif`
+  return `${selected}, "Microsoft YaHei", "SimHei", sans-serif`
+}
+const getTextWatermarkStyle = (wm: any) => ({ fontSize: (wm.fontSize || 24) + 'px', fontFamily: previewFontFamily(wm.fontFamily), fontWeight: wm.bold ? 'bold' : 'normal', fontStyle: wm.italic ? 'italic' : 'normal', textDecoration: wm.underline ? 'underline' : 'none' })
+const getPreviewScaleX = () => {
+  const actualWidth = videoRef.value?.videoWidth || videoSize.value.width || 0
+  return actualWidth && videoSize.value.width ? actualWidth / videoSize.value.width : 1
+}
+const rememberImageSize = (event: Event, wm: any) => {
+  const image = event.target as HTMLImageElement
+  if (!image?.naturalWidth || !image?.naturalHeight) return
+  wm.imageWidth = image.naturalWidth
+  wm.imageHeight = image.naturalHeight
+}
+const getImageWatermarkStyle = (wm: any) => {
+  const naturalWidth = Number(wm.imageWidth || 120)
+  const displayWidth = Math.max(1, (naturalWidth * Number(wm.scale || 100) / 100) / getPreviewScaleX())
+  return { width: displayWidth + 'px' }
+}
+const getTilePositions = (wm: any) => {
+  const containerWidth = videoSize.value.width || 400
+  const containerHeight = videoSize.value.height || 300
+  return layoutPositions(wm.type === 'text' ? textTileLayout : imageTileLayout, containerWidth, containerHeight)
+}
 const getTileWatermarkStyle = (wm: any, pos: { x: number; y: number }) => ({ left: pos.x + 'px', top: pos.y + 'px', transform: `rotate(${wm.rotation}deg)`, opacity: wm.opacity / 100 })
-const getGridPositions = () => { const containerWidth = videoSize.value.width || 400, containerHeight = videoSize.value.height || 300, positions = []; for (let row = 0; row < 3; row++) { for (let col = 0; col < 3; col++) { positions.push({ x: (containerWidth / 4) * (col + 0.5), y: (containerHeight / 4) * (row + 0.5) }) } }; return positions }
-const getGridWatermarkStyle = (wm: any, pos: { x: number; y: number }) => ({ left: pos.x + 'px', top: pos.y + 'px', transform: `translate(-50%, -50%) rotate(${wm.rotation}deg)`, opacity: wm.opacity / 100 })
+const getGridPositions = () => {
+  const containerWidth = videoSize.value.width || 400
+  const containerHeight = videoSize.value.height || 300
+  return layoutPositions(gridLayout, containerWidth, containerHeight)
+}
+const getGridWatermarkStyle = (wm: any, pos: { x: number; y: number }) => ({ left: pos.x + 'px', top: pos.y + 'px', transform: `rotate(${wm.rotation}deg)`, opacity: wm.opacity / 100 })
 const startDrag = (e: MouseEvent, wm: any, idx: number) => { if (wm.position !== 'custom') return; selectedWatermark.value = idx; const startX = e.clientX - wm.x, startY = e.clientY - wm.y; const onMove = (ev: MouseEvent) => { wm.x = ev.clientX - startX; wm.y = ev.clientY - startY }; const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp) }; document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp) }
 const serializeWatermarks = (watermarks: any[]) => watermarks.map((wm: any) => ({
   type: wm.type,
@@ -556,6 +607,8 @@ const serializeWatermarks = (watermarks: any[]) => watermarks.map((wm: any) => (
   actualX: wm.actualX,
   actualY: wm.actualY,
   actualFontSize: wm.actualFontSize,
+  imageWidth: wm.imageWidth,
+  imageHeight: wm.imageHeight,
   startTime: parseTimeInput(wm.startTimeStr, wm.startTime || 0),
   endTime: parseTimeInput(wm.endTimeStr, wm.endTime || videoDuration.value || 0)
 }))
@@ -565,7 +618,7 @@ const saveWatermark = () => {
     // 计算预览尺寸与视频实际尺寸的比例
     const scaleX = videoSize.value.width ? videoRef.value.videoWidth / videoSize.value.width : 1
     const scaleY = videoSize.value.height ? videoRef.value.videoHeight / videoSize.value.height : 1
-    
+
     // 保存水印时，将坐标和字体大小转换为视频实际尺寸
     currentFile.value.watermarks = clonePlain(watermarkList.value.map(wm => ({
       ...wm,
@@ -647,7 +700,7 @@ const startSelectArea = (e: MouseEvent) => {
   drawCurrentX.value = drawStartX.value
   drawCurrentY.value = drawStartY.value
   isDrawing.value = true
-  
+
   const onMove = (ev: MouseEvent) => {
     drawCurrentX.value = ev.clientX - rect.left
     drawCurrentY.value = ev.clientY - rect.top
@@ -658,25 +711,25 @@ const startSelectArea = (e: MouseEvent) => {
     const height = Math.abs(drawCurrentY.value - drawStartY.value)
     drawingAreaStyle.value = { left: x + 'px', top: y + 'px', width: width + 'px', height: height + 'px' }
   }
-  
+
   const onUp = () => {
     isDrawing.value = false
     document.removeEventListener('mousemove', onMove)
     document.removeEventListener('mouseup', onUp)
-    
+
     // 计算最终区域
     const x = Math.min(drawStartX.value, drawCurrentX.value)
     const y = Math.min(drawStartY.value, drawCurrentY.value)
     const width = Math.abs(drawCurrentX.value - drawStartX.value)
     const height = Math.abs(drawCurrentY.value - drawStartY.value)
-    
+
     // 只有当区域足够大时才添加
     if (width > 10 && height > 10) {
       removeAreaList.value.push({ x, y, width, height })
       selectedRemoveArea.value = removeAreaList.value.length - 1
     }
   }
-  
+
   document.addEventListener('mousemove', onMove)
   document.addEventListener('mouseup', onUp)
 }
@@ -685,25 +738,25 @@ const selectArea = (e: MouseEvent, idx: number) => {
   selectedRemoveArea.value = idx
   const area = removeAreaList.value[idx]
   if (!watermarkSelectLayerRef.value) return
-  
+
   const rect = watermarkSelectLayerRef.value.getBoundingClientRect()
   const startX = e.clientX
   const startY = e.clientY
   const startAreaX = area.x
   const startAreaY = area.y
-  
+
   const onMove = (ev: MouseEvent) => {
     const dx = ev.clientX - startX
     const dy = ev.clientY - startY
     area.x = Math.max(0, Math.min(removeVideoSize.value.width - area.width, startAreaX + dx))
     area.y = Math.max(0, Math.min(removeVideoSize.value.height - area.height, startAreaY + dy))
   }
-  
+
   const onUp = () => {
     document.removeEventListener('mousemove', onMove)
     document.removeEventListener('mouseup', onUp)
   }
-  
+
   document.addEventListener('mousemove', onMove)
   document.addEventListener('mouseup', onUp)
 }
@@ -715,19 +768,19 @@ const startResize = (e: MouseEvent, idx: number, _handle: string) => {
   const startY = e.clientY
   const startWidth = area.width
   const startHeight = area.height
-  
+
   const onMove = (ev: MouseEvent) => {
     const dx = ev.clientX - startX
     const dy = ev.clientY - startY
     area.width = Math.max(20, startWidth + dx)
     area.height = Math.max(20, startHeight + dy)
   }
-  
+
   const onUp = () => {
     document.removeEventListener('mousemove', onMove)
     document.removeEventListener('mouseup', onUp)
   }
-  
+
   document.addEventListener('mousemove', onMove)
   document.addEventListener('mouseup', onUp)
 }
@@ -753,7 +806,7 @@ const saveRemoveWatermark = () => {
     if (video && removeVideoSize.value.width > 0) {
       const scaleX = video.videoWidth / removeVideoSize.value.width
       const scaleY = video.videoHeight / removeVideoSize.value.height
-      
+
       removeCurrentFile.value.removeAreas = clonePlain(removeAreaList.value.map(area => ({
         x: Math.round(area.x * scaleX),
         y: Math.round(area.y * scaleY),
@@ -770,7 +823,7 @@ const saveRemoveWatermark = () => {
     }
     removeCurrentFile.value.removeMode = removeMode.value
     removeCurrentFile.value.removeFillColor = removeFillColor.value
-    
+
     // 重置状态为待处理，让用户知道需要重新处理
     if (removeCurrentFile.value.status === 'completed' || removeCurrentFile.value.status === 'error') {
       removeCurrentFile.value.status = 'pending'
@@ -785,60 +838,78 @@ const getOutputPath = (file: any) => {
   return outputPathType.value === 'source' ? platformService.join(platformService.dirname(file.path), file.outputName) : platformService.join(outputDir.value, file.outputName)
 }
 
-const processFile = async (file: any, showDialog = true) => {
-  await checkAuthAndExecute(async () => {
-    if (file.status === 'converting') return
-    file.status = 'converting'
-    file.progress = 0
-    file.errorMsg = ''
-    
-    try {
-      // 检查是否有去水印区域
-      const hasRemoveAreas = file.removeAreas && file.removeAreas.length > 0
-      // 检查是否有添加水印
-      const hasWatermarks = file.watermarks && file.watermarks.length > 0
-      
-      if (hasRemoveAreas) {
-        // 去水印处理
-        await platformService.removeWatermark({
-          id: file.id,
-          inputPath: file.path,
-          outputPath: getOutputPath(file),
-          areas: file.removeAreas.map((area: any) => ({
-            x: area.x,
-            y: area.y,
-            width: area.width,
-            height: area.height
-          })),
-          mode: file.removeMode || 'blur',
-          fillColor: file.removeFillColor || '#000000',
-          settings: cloneSettings(file.settings || watermarkSettings.value)
-        })
-      } else if (hasWatermarks) {
-      // 添加水印处理
-      const watermarksData = serializeWatermarks(file.watermarks)
-      
-      await platformService.addWatermark({
-        id: file.id,
-        inputPath: file.path,
-        outputPath: getOutputPath(file),
-        watermarks: watermarksData,
-        settings: cloneSettings(file.settings || watermarkSettings.value)
-      })
-    } else {
-      // 没有水印操作，直接复制
+const executeWatermarkTask = async (file: any) => {
+  const hasRemoveAreas = file.removeAreas && file.removeAreas.length > 0
+  const hasWatermarks = file.watermarks && file.watermarks.length > 0
+
+  if (hasRemoveAreas) {
+    await platformService.removeWatermark({
+      id: file.id,
+      inputPath: file.path,
+      outputPath: getOutputPath(file),
+      areas: file.removeAreas.map((area: any) => ({
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: area.height
+      })),
+      mode: file.removeMode || 'blur',
+      fillColor: file.removeFillColor || '#000000',
+      settings: cloneSettings(file.settings || watermarkSettings.value)
+    })
+    return true
+  }
+
+  if (hasWatermarks) {
+    const watermarksData = serializeWatermarks(file.watermarks)
+    await platformService.addWatermark({
+      id: file.id,
+      inputPath: file.path,
+      outputPath: getOutputPath(file),
+      watermarks: watermarksData,
+      settings: cloneSettings(file.settings || watermarkSettings.value)
+    })
+    return true
+  }
+
+  return false
+}
+
+const runWatermarkProcessingForFile = async (file: any) => {
+  if (file.status === 'converting') return false
+  const runId = beginConversionRun(file, { clearErrorMessage: true })
+
+  try {
+    const processed = await executeWatermarkTask(file)
+    if (!isCurrentConversionRun(file, runId)) return false
+    if (isConversionCancelRequested(file, runId)) {
+      finishCancelledConversion(file, { clearErrorMessage: true })
+      return false
+    }
+    if (!processed) {
       file.status = 'error'
       file.errorMsg = t('common.noWatermarkAction')
-      return
+      return false
     }
-    
     file.status = 'completed'
     file.progress = 100
+    return true
   } catch (err: any) {
+    if (!isCurrentConversionRun(file, runId)) return false
+    if (isConversionCancelRequested(file, runId)) {
+      finishCancelledConversion(file, { clearErrorMessage: true })
+      return false
+    }
     file.status = 'error'
     file.errorMsg = err?.message || t('common.processFailedCheckSettings')
     console.error(t('common.processFailed'), err)
+    return false
   }
+}
+
+const processFile = async (file: any, showDialog = true) => {
+  await checkAuthAndExecute(async () => {
+    await runWatermarkProcessingForFile(file)
   })
 }
 
@@ -846,59 +917,12 @@ const processAll = async () => {
   if (batchActionDisabled.value) return
   await checkAuthAndExecute(async () => {
     const filesToProcess = [...selectedReadyFiles.value]
-    
+
     let completedCount = 0
     for (const file of filesToProcess) {
-      if (file.status === 'converting') continue
-      file.status = 'converting'
-      file.progress = 0
-      file.errorMsg = ''
-      
-      try {
-        // 检查是否有去水印区域
-        const hasRemoveAreas = file.removeAreas && file.removeAreas.length > 0
-        // 检查是否有添加水印
-        const hasWatermarks = file.watermarks && file.watermarks.length > 0
-        
-        if (hasRemoveAreas) {
-          // 去水印处理
-          await platformService.removeWatermark({
-            id: file.id,
-            inputPath: file.path,
-            outputPath: getOutputPath(file),
-            areas: file.removeAreas.map((area: any) => ({
-              x: area.x,
-              y: area.y,
-              width: area.width,
-              height: area.height
-            })),
-            mode: file.removeMode || 'blur',
-            fillColor: file.removeFillColor || '#000000',
-            settings: cloneSettings(file.settings || watermarkSettings.value)
-          })
-        } else if (hasWatermarks) {
-          // 添加水印处理
-          const watermarksData = serializeWatermarks(file.watermarks)
-          
-          await platformService.addWatermark({
-            id: file.id,
-            inputPath: file.path,
-            outputPath: getOutputPath(file),
-            watermarks: watermarksData,
-            settings: cloneSettings(file.settings || watermarkSettings.value)
-          })
-        }
-        
-        file.status = 'completed'
-        file.progress = 100
-        completedCount++
-      } catch (err: any) {
-        file.status = 'error'
-        file.errorMsg = err?.message || t('common.processFailedCheckSettings')
-        console.error(t('common.processFailed'), err)
-      }
+      if (await runWatermarkProcessingForFile(file)) completedCount++
     }
-    
+
     if (filesToProcess.length === 0) {
       // 没有可处理的文件，提示用户
       console.log(t('common.noFilesToProcess'))
@@ -971,7 +995,9 @@ const handleURLDownloaded = (filePath: string) => { handleFilesSelected([filePat
     }
     .action-btns { display: flex; align-items: center; gap: 12px;
       .setting-btn { border-color: #ddd; }
-      .process-btn { background: #36d1c4; border-color: #36d1c4; border-radius: 6px; &:disabled { background: #a8e6e0; border-color: #a8e6e0; } }
+      .process-btn { background: #36d1c4; border-color: #36d1c4; border-radius: 6px;
+        &.cancel-btn { background: #c65f5f; border-color: #c65f5f; }
+      }
     }
     .delete-btn { font-size: 18px; color: #999; cursor: pointer; &:hover { color: #f56c6c; } }
   }
@@ -995,7 +1021,7 @@ const handleURLDownloaded = (filePath: string) => { handleFilesSelected([filePat
           .watermark-preview { position: absolute; pointer-events: auto; display: inline-block;
             &.custom-item { cursor: move; }
             &.tile-item, &.grid-item { pointer-events: none; }
-            img { max-width: 150px; height: auto; display: block; }
+            img { max-width: none; height: auto; display: block; }
             .text-watermark { color: white; text-shadow: 2px 2px 4px rgba(0,0,0,0.5); white-space: nowrap; display: block; }
             .selection-box { position: absolute; top: -4px; left: -4px; width: calc(100% + 8px); height: calc(100% + 8px); border: 2px dashed #36d1c4; pointer-events: none; box-sizing: border-box;
               .corner { position: absolute; width: 8px; height: 8px; background: #fff; border: 2px solid #36d1c4; box-sizing: border-box;

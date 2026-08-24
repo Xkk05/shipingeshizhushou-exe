@@ -1,9 +1,9 @@
 <template>
   <div class="module-page" @dragover.prevent="onDragOver" @dragleave="onDragLeave" @drop.prevent="onDrop">
     <TopToolbar :show-url-download="true" @add-files="addFiles" @add-folder="addFolder" @add-device="showQRUpload = true" @add-url="showURLDialog = true" @clear="clearFiles" />
-    
+
     <div class="content-area">
-      <FileDropZone v-if="!files.length" @files-selected="onFilesFromDropZone" />
+      <FileDropZone v-if="!files.length" :extensions="VIDEO_EXTENSIONS" @files-selected="onFilesFromDropZone" />
       <div v-else class="file-list-wrapper">
         <SelectionToolbar
           :all-selected="allSelectableSelected"
@@ -73,8 +73,8 @@
           <el-input v-model="outputName" class="name-input" :placeholder="$t('common.mergedVideoDefaultName')" />
         </div>
         <div class="action-area">
-          <el-button type="primary" class="action-btn" :disabled="mergeActionDisabled" @click="mergeAll">
-            {{ merging ? $t('common.merging') : $t('common.startMerge') }}
+          <el-button :type="merging ? 'danger' : 'primary'" :class="['action-btn', { 'cancel-btn': merging }]" :disabled="!merging && mergeActionDisabled" @click="merging ? cancelMerge() : mergeAll()">
+            {{ merging ? $t('common.cancel') : $t('common.startMerge') }}
           </el-button>
         </div>
       </div>
@@ -84,11 +84,12 @@
           <el-select v-model="outputPathType" class="path-select" @change="handlePathTypeChange">
             <el-option :label="$t('common.videoConverterFolder')" value="default" />
             <el-option :label="$t('common.sameAsSource')" value="source" />
-            <el-option :label="$t('common.customFolder')" value="custom" />
+            <el-option :label="customPathLabel" value="custom" />
           </el-select>
           <el-button class="folder-btn" @click="selectOutputDir">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="#36d1c4"><path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
           </el-button>
+          <span v-if="outputPathType === 'custom' && outputDir" class="selected-path" :title="outputDir">{{ outputDir }}</span>
         </div>
         <div v-if="merging" class="progress-info"><el-progress :percentage="progress" :stroke-width="8" /></div>
         <div v-else-if="mergeStatus === 'completed'" class="status-text success">{{ $t('common.mergeSuccess') }}</div>
@@ -120,12 +121,14 @@ import { useI18n } from 'vue-i18n'
 import { getWebVideoMeta } from '@/utils/webMediaMeta'
 import { useSelectableFiles } from '@/composables/useSelectableFiles'
 import { cloneOutputSettings } from '@/utils/outputSettings'
+import { isVideoFileName } from '@/utils/mediaFormats'
+import { clampProgress } from '@/utils/progress'
 
 const { t } = useI18n()
 import { platformService } from '@/services/platformService'
 
 const fileStore = useFileStore()
-const { videoMergeFiles: files } = storeToRefs(fileStore)
+const { videoMergeFiles: files, videoMergeState } = storeToRefs(fileStore)
 const { showAuthDialog, checkAuthAndExecute, handleAuthSuccess } = useAuthCheck()
 
 const outputFormat = ref('mp4')
@@ -135,11 +138,23 @@ const showURLDialog = ref(false)
 const outputName = ref(t('common.mergedVideoDefaultName'))
 const outputDir = ref('')
 const outputPathType = ref('default')
-const merging = ref(false)
-const progress = ref(0)
-const mergeStatus = ref('')
+const customPathLabel = computed(() => outputDir.value && outputPathType.value === 'custom' ? outputDir.value : t('common.customFolder'))
+const merging = computed({
+  get: () => videoMergeState.value.merging,
+  set: value => { videoMergeState.value.merging = value },
+})
+const progress = computed({
+  get: () => videoMergeState.value.progress,
+  set: value => { videoMergeState.value.progress = clampProgress(value) },
+})
+const mergeStatus = computed({
+  get: () => videoMergeState.value.status,
+  set: value => { videoMergeState.value.status = value },
+})
 const isDragging = ref(false)
 const isProcessingDrop = ref(false)
+const activeMergeRunId = ref(0)
+const cancelledMergeRunId = ref(0)
 const mergeSettings = ref<any>({
   resolution: 'auto',
   width: 0,
@@ -170,7 +185,11 @@ const videoExtensions = ['mp4', 'avi', 'mkv', 'mov', 'flv', 'wmv', 'webm', '3gp'
 
 onMounted(async () => {
   outputDir.value = await platformService.getDefaultOutputDir()
-  platformService.onConvertProgress((data: { percent: number }) => { progress.value = Math.round(data.percent) }, 'merge-progress')
+  platformService.onConvertProgress((data: { id: string; percent: number }) => {
+    if (videoMergeState.value.taskId && data.id === videoMergeState.value.taskId) {
+      progress.value = data.percent
+    }
+  }, 'merge-progress')
 })
 
 onUnmounted(() => { platformService.removeConvertProgressListeners('merge-progress') })
@@ -188,9 +207,9 @@ const formatDuration = (seconds: number) => {
 }
 
 // 拖拽事件
-const onDragOver = (e: DragEvent) => { 
+const onDragOver = (e: DragEvent) => {
   e.preventDefault()
-  if (files.value.length) isDragging.value = true 
+  if (files.value.length) isDragging.value = true
 }
 
 const onDragLeave = (e: DragEvent) => {
@@ -205,10 +224,10 @@ const onDrop = async (e: DragEvent) => {
   e.preventDefault()
   e.stopPropagation()
   isDragging.value = false
-  
+
   // 如果文件列表为空，让 FileDropZone 处理
   if (!files.value.length) return
-  
+
   try {
     const mediaFiles = await handleDragDropEvent(e, VIDEO_EXTENSIONS)
     if (mediaFiles.length) {
@@ -249,6 +268,7 @@ const addFilesToList = async (selectedFiles: any[]) => {
       browserFile = f.file instanceof File ? f.file : (f instanceof File ? f : null)
     }
     if (!filePath && !fileId) continue
+    if (!isVideoFileName(fileName || filePath)) continue
     if (files.value.some(file => file.path === filePath || file.id === fileId)) continue
 
     let videoInfo: any = {}, thumbnail = ''
@@ -276,7 +296,11 @@ const addFilesToList = async (selectedFiles: any[]) => {
 
 const handleFilesSelected = addFilesToList
 
-const clearFiles = () => { files.value = []; mergeStatus.value = ''; clearSelection() }
+const clearFiles = () => {
+  files.value = []
+  videoMergeState.value = { taskId: '', merging: false, progress: 0, status: '' }
+  clearSelection()
+}
 const deleteFile = (file: any) => { files.value = files.value.filter(f => f.id !== file.id); removeSelection(file) }
 const moveUp = (index: number) => { if (index > 0) { const temp = files.value[index]; files.value[index] = files.value[index - 1]; files.value[index - 1] = temp } }
 const moveDown = (index: number) => { if (index < files.value.length - 1) { const temp = files.value[index]; files.value[index] = files.value[index + 1]; files.value[index + 1] = temp } }
@@ -295,25 +319,63 @@ const getOutputPath = (targetFiles = selectedReadyFiles.value) => {
   return platformService.join(outputDir.value, `${outputName.value}.${outputFormat.value}`)
 }
 
+const cancelMerge = async () => {
+  if (!merging.value || !videoMergeState.value.taskId) return
+  const taskId = videoMergeState.value.taskId
+  cancelledMergeRunId.value = activeMergeRunId.value
+  merging.value = false
+  progress.value = 0
+  mergeStatus.value = ''
+  videoMergeState.value.taskId = ''
+  try {
+    await platformService.cancelConvert(taskId)
+  } catch (error) {
+    console.error('取消合并失败:', error)
+  }
+}
+
 const mergeAll = async () => {
   if (mergeActionDisabled.value) return
   await checkAuthAndExecute(async () => {
     const targetFiles = [...selectedReadyFiles.value]
     if (targetFiles.length < 2) return
-    merging.value = true; progress.value = 0; mergeStatus.value = ''
+    const taskId = `merge-${Date.now()}`
+    const runId = activeMergeRunId.value + 1
+    activeMergeRunId.value = runId
+    cancelledMergeRunId.value = 0
+    videoMergeState.value = { taskId, merging: true, progress: 0, status: '' }
     try {
-      await platformService.convertVideo({ 
-        id: `merge-${Date.now()}`, 
+      await platformService.convertVideo({
+        id: taskId,
         inputPaths: targetFiles.map(f => f.path),
         outputPath: getOutputPath(targetFiles),
         format: outputFormat.value,
         settings: cloneOutputSettings(mergeSettings.value),
         type: 'merge'
       })
+      if (activeMergeRunId.value !== runId) return
+      if (cancelledMergeRunId.value === runId) {
+        progress.value = 0
+        mergeStatus.value = ''
+        return
+      }
       mergeStatus.value = 'completed'; progress.value = 100
       clearSelection()
-    } catch (err) { mergeStatus.value = 'error'; console.error('合并失败:', err) }
-    finally { merging.value = false }
+    } catch (err) {
+      if (activeMergeRunId.value !== runId) return
+      if (cancelledMergeRunId.value === runId) {
+        progress.value = 0
+        mergeStatus.value = ''
+        return
+      }
+      mergeStatus.value = 'error'
+      console.error('合并失败:', err)
+    } finally {
+      if (activeMergeRunId.value === runId) {
+        merging.value = false
+        videoMergeState.value.taskId = ''
+      }
+    }
   })
 }
 
@@ -323,6 +385,7 @@ const handleSettingsConfirm = (data: { format: string; settings: any }) => {
   // 重置合并状态，允许重新合并
   mergeStatus.value = ''
   progress.value = 0
+  videoMergeState.value.taskId = ''
 }
 const handleFilesUploaded = (filePaths: string[]) => { handleFilesSelected(filePaths); showQRUpload.value = false }
 const handleURLDownloaded = (filePath: string) => { handleFilesSelected([filePath]) }
@@ -397,7 +460,7 @@ const handleURLDownloaded = (filePath: string) => { handleFilesSelected([filePat
       .format-selector { display: flex; align-items: center; gap: 8px; padding: 8px 16px; background: #fff; border: 1px solid #36d1c4; border-radius: 4px; cursor: pointer; font-size: 13px; color: #333; min-width: 100px; justify-content: space-between; &:hover { background: #e8f8f6; } }
     }
     .action-area { margin-left: auto;
-      .action-btn { background: #36d1c4; border-color: #36d1c4; padding: 14px 40px; border-radius: 24px; font-size: 15px; &:hover { background: #2bb5a9; border-color: #2bb5a9; } &:disabled { background: #ccc; border-color: #ccc; } }
+      .action-btn { background: #36d1c4; border-color: #36d1c4; padding: 14px 40px; border-radius: 24px; font-size: 15px; &:hover { background: #2bb5a9; border-color: #2bb5a9; } &:disabled { background: #ccc; border-color: #ccc; } &.cancel-btn { background: #c65f5f; border-color: #c65f5f; &:hover { background: #b65353; border-color: #b65353; } } }
     }
   }
   .path-row { display: flex; align-items: center; justify-content: space-between;

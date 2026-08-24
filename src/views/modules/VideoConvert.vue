@@ -25,6 +25,7 @@
             @select-change="setFileSelected(file, $event)"
             @settings="openSettings(file)"
             @convert="convertFile(file)"
+            @cancel="cancelFile(file)"
             @delete="deleteFile(file)"
           />
         </div>
@@ -70,6 +71,13 @@ import { handleDragDropEvent, VIDEO_EXTENSIONS } from '@/utils/dragDropUtils'
 import AuthCodeDialog from '@/components/AuthCodeDialog.vue'
 import { platformService } from '@/services/platformService'
 import { useSelectableFiles } from '@/composables/useSelectableFiles'
+import {
+  beginConversionRun,
+  finishCancelledConversion,
+  isConversionCancelRequested,
+  isCurrentConversionRun,
+  requestConversionCancel,
+} from '@/utils/conversionCancel'
 import {
   buildOutputName,
   cloneOutputSettings,
@@ -303,6 +311,16 @@ const deleteFile = (file: any) => {
   removeSelection(file)
 }
 
+const cancelFile = async (file: any) => {
+  if (file.status !== 'converting') return
+  requestConversionCancel(file)
+  try {
+    await platformService.cancelConvert(file.id)
+  } catch (error) {
+    console.error('取消转换失败:', error)
+  }
+}
+
 const openSettings = (file?: any) => {
   if (file) {
     currentEditingFile.value = file
@@ -330,14 +348,23 @@ const getOutputPath = (file: any) => {
 
 const runConversionForFile = async (file: any) => {
   if (file.status === 'converting') return
-  file.status = 'converting'
-  file.progress = 0
+  const runId = beginConversionRun(file)
   try {
     const settings = cloneOutputSettings(file.settings || convertSettings.value)
     await platformService.convertVideo({ id: file.id, inputPath: file.path, outputPath: getOutputPath(file), format: file.outputFormat, settings })
+    if (!isCurrentConversionRun(file, runId)) return
+    if (isConversionCancelRequested(file, runId)) {
+      finishCancelledConversion(file)
+      return
+    }
     file.status = 'completed'
     file.progress = 100
   } catch (err: any) {
+    if (!isCurrentConversionRun(file, runId)) return
+    if (isConversionCancelRequested(file, runId)) {
+      finishCancelledConversion(file)
+      return
+    }
     file.status = 'error'
     console.error(t('error.convertFailed'), err)
   }

@@ -27,8 +27,6 @@ import i18n from './i18n'
 import App from './App.vue'
 import './styles/index.scss'
 import { useAuthStore } from './stores/authStore'
-import { useAuthCodeStore } from './stores/authCodeStore'
-import { platformService } from './services/platformService'
 import { setupRouterSeo } from './utils/seo'
 
 const app = createApp(App)
@@ -69,12 +67,5 @@ if (authStore.token) {
   authStore.verifyLogin().catch((error) => {
     console.error(`${t('error.verifyLoginFailed')}:`, error)
     authStore.clearLogin()
-  })
-}
-
-if (platformService.isElectron) {
-  const authCodeStore = useAuthCodeStore()
-  authCodeStore.initAuthStatus().catch((error) => {
-    console.error(`${t('error.initAuthStatusFailed')}:`, error)
   })
 }

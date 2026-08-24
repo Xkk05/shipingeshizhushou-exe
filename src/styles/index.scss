@@ -74,3 +74,13 @@ $shadow-md: 0 4px 16px rgba(0, 0, 0, 0.1);
     background: $primary-light;
   }
 }
+
+.selected-path {
+  min-width: 0;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #4b5563;
+  font-size: 13px;
+}

@@ -34,14 +34,21 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { handleDragDropEvent, MEDIA_EXTENSIONS } from '@/utils/dragDropUtils'
 import { useI18n } from 'vue-i18n'
 const { t } = useI18n()
 
+const props = withDefaults(defineProps<{
+  extensions?: string[]
+}>(), {
+  extensions: () => MEDIA_EXTENSIONS,
+})
+
 const emit = defineEmits(['files-selected'])
 
 const isDragOver = ref(false)
+const acceptedExtensions = computed(() => props.extensions?.length ? props.extensions : MEDIA_EXTENSIONS)
 
 const handleDragOver = (e: DragEvent) => {
   e.preventDefault()
@@ -65,7 +72,7 @@ const handleDrop = async (e: DragEvent) => {
   isDragOver.value = false
   
   try {
-    const mediaFiles = await handleDragDropEvent(e, MEDIA_EXTENSIONS)
+    const mediaFiles = await handleDragDropEvent(e, acceptedExtensions.value)
     if (mediaFiles.length) {
       emit('files-selected', mediaFiles)
     } else {
@@ -80,8 +87,8 @@ import { platformService } from '@/services/platformService'
 
 const selectFiles = async () => {
   try {
-    const filePaths = await platformService.selectFiles([
-      { name: 'Media Files', extensions: MEDIA_EXTENSIONS }
+      const filePaths = await platformService.selectFiles([
+      { name: 'Media Files', extensions: acceptedExtensions.value }
     ])
     if (filePaths?.length) {
       emit('files-selected', filePaths)

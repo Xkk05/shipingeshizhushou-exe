@@ -18,11 +18,15 @@ dist-ssr
 .playwright-cli/
 release_build_multi_platform/
 release_build_v101_portable_new/
+release_build_v101_download_fixed/
+release_build_v*_download_fixed/win-unpacked/
+release_build_v*_download_fixed/*.zip
 dist-server/
 dist-web/
 dist-web-check/
 converted/
 uploads/
+tmp-manual-media-*/
 test-media/
 test-results/
 playwright-report/

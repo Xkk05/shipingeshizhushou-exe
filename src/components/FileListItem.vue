@@ -43,7 +43,7 @@
         <span class="value">{{ file.format?.toUpperCase() }}</span>
       </div>
       <div class="meta" v-if="file.size">
-        <span class="tag">{{ t('common.estimatedSize') }}</span>
+        <span class="tag">{{ t('common.fileSize') }}</span>
         <span class="value">{{ formatSize(file.size) }}</span>
       </div>
     </div>
@@ -60,9 +60,9 @@
         </svg>
       </div>
       <div class="filename-edit" v-else>
-        <el-input 
-          v-model="editingName" 
-          size="small" 
+        <el-input
+          v-model="editingName"
+          size="small"
           @blur="confirmEditName"
           @keyup.enter="confirmEditName"
           @keyup.escape="cancelEditName"
@@ -76,7 +76,11 @@
         <span class="tag">{{ t('common.estimatedSize') }}</span>
         <span class="value">{{ formatSize(file.estimatedSize) }}</span>
       </div>
-      <div class="meta" v-else-if="file.outputResolution">
+      <div class="meta" v-if="file.actualOutputSize">
+        <span class="tag">{{ actualSizeLabel }}</span>
+        <span class="value">{{ formatSize(file.actualOutputSize) }}</span>
+      </div>
+      <div class="meta" v-else-if="!file.estimatedSize && file.outputResolution">
         <span class="tag">{{ t('common.resolution') }}</span>
         <span class="value">{{ file.outputResolution }}</span>
       </div>
@@ -96,14 +100,13 @@
           <path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
         </svg>
       </el-button>
-      <el-button 
-        type="primary" 
-        size="small" 
-        class="convert-btn" 
-        :disabled="file.status === 'converting'"
-        @click="$emit('convert', file)"
+      <el-button
+        :type="file.status === 'converting' ? 'danger' : 'primary'"
+        size="small"
+        :class="['convert-btn', { 'cancel-btn': file.status === 'converting' }]"
+        @click="file.status === 'converting' ? $emit('cancel', file) : $emit('convert', file)"
       >
-        {{ file.status === 'converting' ? t('common.converting') : (file.status === 'completed' ? t('common.completed') : actionText) }}
+        {{ file.status === 'converting' ? t('common.cancel') : (file.status === 'completed' ? t('common.completed') : actionText) }}
       </el-button>
       <el-button class="delete-btn" size="small" text @click="$emit('delete', file)" :disabled="file.status === 'converting'">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="#999">
@@ -115,7 +118,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick } from 'vue'
+import { computed, ref, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 const { t } = useI18n()
 
@@ -127,12 +130,13 @@ const props = defineProps<{
   selectionDisabled?: boolean
 }>()
 
-const emit = defineEmits(['settings', 'convert', 'delete', 'update:file', 'select-change'])
+const emit = defineEmits(['settings', 'convert', 'cancel', 'delete', 'update:file', 'select-change'])
 
 import { platformService } from '@/services/platformService'
 
 const isEditing = ref(false)
 const editingName = ref('')
+const actualSizeLabel = computed(() => props.file.status === 'completed' ? t('common.actualSize') : t('common.currentSize'))
 
 const formatSize = (bytes: number) => {
   if (!bytes) return '0B'
@@ -405,6 +409,11 @@ const cancelEditName = () => {
       border-color: #36d1c4;
       border-radius: 16px;
       padding: 6px 20px;
+
+      &.cancel-btn {
+        background: #c65f5f;
+        border-color: #c65f5f;
+      }
     }
 
     .delete-btn {

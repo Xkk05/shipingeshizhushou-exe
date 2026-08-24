@@ -159,6 +159,7 @@ test('settings dialogs expose only workflow-appropriate formats', async ({ page 
       expect(names).toContain('MKV')
       expect(names).not.toContain('MP3')
       expect(names).not.toContain('WAV')
+      expect(names).not.toContain('SWF')
     } else {
       expect(names).toContain('MP3')
       expect(names).toContain('WAV')

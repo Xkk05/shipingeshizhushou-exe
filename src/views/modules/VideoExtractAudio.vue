@@ -1,9 +1,9 @@
 <template>
   <div class="module-page" @dragover.prevent="onDragOver" @dragleave="onDragLeave" @drop.prevent="onDrop">
     <TopToolbar :show-url-download="true" @add-files="addFiles" @add-folder="addFolder" @add-device="showQRUpload = true" @add-url="showURLDialog = true" @clear="clearFiles" />
-    
+
     <div class="content-area">
-      <FileDropZone v-if="!files.length" @files-selected="onFilesFromDropZone" />
+      <FileDropZone v-if="!files.length" :extensions="VIDEO_EXTENSIONS" @files-selected="onFilesFromDropZone" />
       <div v-else class="file-list-wrapper">
         <SelectionToolbar
           :all-selected="allSelectableSelected"
@@ -54,8 +54,8 @@
               <el-button class="setting-btn" size="small" circle @click="openSettings(file)">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
               </el-button>
-              <el-button type="primary" size="small" class="extract-btn" :disabled="file.status === 'converting'" @click="extractAudio(file)">
-                {{ file.status === 'converting' ? $t('common.extracting') : (file.status === 'completed' ? $t('common.completed') : $t('common.extract')) }}
+              <el-button :type="file.status === 'converting' ? 'danger' : 'primary'" size="small" :class="['extract-btn', { 'cancel-btn': file.status === 'converting' }]" @click="file.status === 'converting' ? cancelFile(file) : extractAudio(file)">
+                {{ file.status === 'converting' ? $t('common.cancel') : (file.status === 'completed' ? $t('common.completed') : $t('common.extract')) }}
               </el-button>
             </div>
           </div>
@@ -84,11 +84,12 @@
         <div class="output-path">
           <span class="label">{{ $t('common.outputPath') }}</span>
           <el-select v-model="outputPathType" class="path-select" @change="handlePathTypeChange">
-            <el-option :label="$t('common.videoConverterFolder')" value="default" /><el-option :label="$t('common.sameAsSource')" value="source" /><el-option :label="$t('common.customFolder')" value="custom" />
+            <el-option :label="$t('common.videoConverterFolder')" value="default" /><el-option :label="$t('common.sameAsSource')" value="source" /><el-option :label="customPathLabel" value="custom" />
           </el-select>
           <el-button class="folder-btn" @click="selectOutputDir">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="#36d1c4"><path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
           </el-button>
+          <span v-if="outputPathType === 'custom' && outputDir" class="selected-path" :title="outputDir">{{ outputDir }}</span>
         </div>
       </div>
     </div>
@@ -101,7 +102,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { computed, ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { useFileStore } from '@/stores/fileStore'
 import { storeToRefs } from 'pinia'
 import { useAuthCheck } from '@/composables/useAuthCheck'
@@ -117,6 +118,13 @@ import { platformService } from '@/services/platformService'
 import { getWebVideoMeta } from '@/utils/webMediaMeta'
 import { useI18n } from 'vue-i18n'
 import { useSelectableFiles } from '@/composables/useSelectableFiles'
+import {
+  beginConversionRun,
+  finishCancelledConversion,
+  isConversionCancelRequested,
+  isCurrentConversionRun,
+  requestConversionCancel,
+} from '@/utils/conversionCancel'
 import {
   isFileOutputCustomized,
   markFileOutputCustomized,
@@ -137,6 +145,7 @@ const showQRUpload = ref(false)
 const showURLDialog = ref(false)
 const outputDir = ref('')
 const outputPathType = ref('default')
+const customPathLabel = computed(() => outputDir.value && outputPathType.value === 'custom' ? outputDir.value : t('common.customFolder'))
 const isDragging = ref(false)
 const isProcessingDrop = ref(false)
 const currentEditingFile = ref<any>(null)
@@ -192,9 +201,9 @@ const formatSize = (bytes: number) => {
 
 const playVideo = async (file: any) => { if (file.path) await platformService.playVideo(file.path) }
 
-const onDragOver = (e: DragEvent) => { 
+const onDragOver = (e: DragEvent) => {
   e.preventDefault()
-  if (files.value.length) isDragging.value = true 
+  if (files.value.length) isDragging.value = true
 }
 
 const onDragLeave = (e: DragEvent) => {
@@ -209,10 +218,10 @@ const onDrop = async (e: DragEvent) => {
   e.preventDefault()
   e.stopPropagation()
   isDragging.value = false
-  
+
   // 如果文件列表为空，让 FileDropZone 处理
   if (!files.value.length) return
-  
+
   try {
     const mediaFiles = await handleDragDropEvent(e, VIDEO_EXTENSIONS)
     if (mediaFiles.length) {
@@ -344,6 +353,15 @@ const handleSettingsConfirm = (data: { format: string; settings: any }) => {
 
 const clearFiles = () => { files.value = []; clearSelection() }
 const deleteFile = (file: any) => { files.value = files.value.filter(f => f.id !== file.id); removeSelection(file) }
+const cancelFile = async (file: any) => {
+  if (file.status !== 'converting') return
+  requestConversionCancel(file)
+  try {
+    await platformService.cancelConvert(file.id)
+  } catch (error) {
+    console.error('取消提取失败:', error)
+  }
+}
 
 const handlePathTypeChange = (type: string) => {
   if (type === 'custom') selectOutputDir()
@@ -364,24 +382,43 @@ const getOutputPath = (file: any) => {
   return outputPathType.value === 'source' ? platformService.join(platformService.dirname(file.path), file.outputName) : platformService.join(outputDir.value, file.outputName)
 }
 
+const runExtractAudioForFile = async (file: any) => {
+  if (file.status === 'converting') return false
+  const runId = beginConversionRun(file)
+  try {
+    await platformService.convertVideo({
+      id: file.id,
+      inputPath: file.path,
+      outputPath: getOutputPath(file),
+      format: file.outputFormat || outputFormat.value,
+      bitrate: file.settings?.audioBitrate && file.settings.audioBitrate !== 'auto' ? `${file.settings.audioBitrate}k` : undefined,
+      sampleRate: file.settings?.sampleRate && file.settings.sampleRate !== 'auto' ? file.settings.sampleRate : undefined,
+      channels: file.settings?.channels && file.settings.channels !== 'auto' ? file.settings.channels : undefined,
+      settings: file.settings,
+      type: 'extract-audio'
+    })
+    if (!isCurrentConversionRun(file, runId)) return false
+    if (isConversionCancelRequested(file, runId)) {
+      finishCancelledConversion(file)
+      return false
+    }
+    file.status = 'completed'; file.progress = 100
+    return true
+  } catch (err) {
+    if (!isCurrentConversionRun(file, runId)) return false
+    if (isConversionCancelRequested(file, runId)) {
+      finishCancelledConversion(file)
+      return false
+    }
+    file.status = 'error'
+    console.error('提取失败:', err)
+    return false
+  }
+}
+
 const extractAudio = async (file: any, showDialog = true) => {
   await checkAuthAndExecute(async () => {
-    if (file.status === 'converting') return
-    file.status = 'converting'; file.progress = 0
-    try {
-      await platformService.convertVideo({ 
-        id: file.id, 
-        inputPath: file.path, 
-        outputPath: getOutputPath(file), 
-        format: file.outputFormat || outputFormat.value,
-        bitrate: file.settings?.audioBitrate && file.settings.audioBitrate !== 'auto' ? `${file.settings.audioBitrate}k` : undefined,
-        sampleRate: file.settings?.sampleRate && file.settings.sampleRate !== 'auto' ? file.settings.sampleRate : undefined,
-        channels: file.settings?.channels && file.settings.channels !== 'auto' ? file.settings.channels : undefined,
-        settings: file.settings,
-        type: 'extract-audio'
-      })
-      file.status = 'completed'; file.progress = 100
-    } catch (err) { file.status = 'error'; console.error('提取失败:', err) }
+    await runExtractAudioForFile(file)
   })
 }
 
@@ -390,27 +427,8 @@ const extractAll = async () => {
   await checkAuthAndExecute(async () => {
     const pendingFiles = [...selectedReadyFiles.value]
     let completedCount = 0
-    for (const file of pendingFiles) { 
-      if (file.status === 'converting') continue
-      file.status = 'converting'; file.progress = 0
-      try {
-        await platformService.convertVideo({ 
-          id: file.id, 
-          inputPath: file.path, 
-          outputPath: getOutputPath(file), 
-          format: file.outputFormat || outputFormat.value,
-          bitrate: file.settings?.audioBitrate && file.settings.audioBitrate !== 'auto' ? `${file.settings.audioBitrate}k` : undefined,
-          sampleRate: file.settings?.sampleRate && file.settings.sampleRate !== 'auto' ? file.settings.sampleRate : undefined,
-          channels: file.settings?.channels && file.settings.channels !== 'auto' ? file.settings.channels : undefined,
-          settings: file.settings,
-          type: 'extract-audio'
-        })
-        file.status = 'completed'; file.progress = 100
-        completedCount++
-      } catch (err) { 
-        file.status = 'error'; 
-        console.error('提取失败:', err) 
-      }
+    for (const file of pendingFiles) {
+      if (await runExtractAudioForFile(file)) completedCount++
     }
     clearSelection()
   })
@@ -461,7 +479,7 @@ const handleURLDownloaded = (filePath: string) => { handleFilesSelected([filePat
     .duration, .size { position: absolute; bottom: 6px; background: rgba(0,0,0,0.6); color: white; font-size: 11px; padding: 2px 6px; border-radius: 4px; }
     .duration { left: 6px; } .size { right: 6px; }
   }
-  
+
   .file-info, .output-info { flex: 1; min-width: 0;
     .filename { font-size: 14px; color: #333; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
       &.editable { display: flex; align-items: center; gap: 6px; cursor: pointer; .edit-icon { opacity: 0; transition: opacity 0.2s; } &:hover .edit-icon { opacity: 1; } }
@@ -474,12 +492,14 @@ const handleURLDownloaded = (filePath: string) => { handleFilesSelected([filePat
     }
     .status-text { font-size: 12px; margin-top: 8px; &.success { color: #36d1c4; } &.error { color: #f56c6c; } }
   }
-  
+
   .arrow { color: #ccc; font-size: 20px; padding: 0 16px; }
   .delete-btn { font-size: 20px; color: #999; position: absolute; right: 16px; top: 8px; padding: 0; min-width: auto; }
   .actions { display: flex; align-items: center; gap: 24px;
     .setting-btn { border-color: #e0e0e0; }
-    .extract-btn { background: #36d1c4; border-color: #36d1c4; border-radius: 8px; padding: 8px 24px; }
+    .extract-btn { background: #36d1c4; border-color: #36d1c4; border-radius: 8px; padding: 8px 24px;
+      &.cancel-btn { background: #c65f5f; border-color: #c65f5f; }
+    }
   }
 }
 

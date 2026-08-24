@@ -1,9 +1,9 @@
 <template>
   <div class="module-page" @dragover.prevent="onDragOver" @dragleave="onDragLeave" @drop.prevent="onDrop">
     <TopToolbar :show-url-download="true" @add-files="addFiles" @add-folder="addFolder" @add-device="showQRUpload = true" @add-url="showURLDialog = true" @clear="clearFiles" />
-    
+
     <div class="content-area">
-      <FileDropZone v-if="!files.length" @files-selected="onFilesFromDropZone" />
+      <FileDropZone v-if="!files.length" :extensions="VIDEO_EXTENSIONS" @files-selected="onFilesFromDropZone" />
       <div v-else class="file-list-wrapper">
         <SelectionToolbar
           :all-selected="allSelectableSelected"
@@ -25,6 +25,7 @@
             @select-change="setFileSelected(file, $event)"
             @settings="openSettings(file)"
             @convert="compressFile(file)"
+            @cancel="cancelFile(file)"
             @delete="deleteFile(file)"
           />
         </div>
@@ -61,11 +62,12 @@
           <el-select v-model="outputPathType" class="path-select" @change="handlePathTypeChange">
             <el-option :label="$t('common.videoConverterFolder')" value="default" />
             <el-option :label="$t('common.sameAsSource')" value="source" />
-            <el-option :label="$t('common.customFolder')" value="custom" />
+            <el-option :label="customPathLabel" value="custom" />
           </el-select>
           <el-button class="folder-btn" @click="selectOutputDir">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="#36d1c4"><path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
           </el-button>
+          <span v-if="outputPathType === 'custom' && outputDir" class="selected-path" :title="outputDir">{{ outputDir }}</span>
         </div>
       </div>
     </div>
@@ -74,7 +76,7 @@
     <QRUploadDialog v-model="showQRUpload" @files-uploaded="handleFilesUploaded" />
     <M3U8Dialog v-model="showURLDialog" @download-complete="handleURLDownloaded" />
     <AuthCodeDialog v-model="showAuthDialog" @success="handleAuthSuccess" />
-    
+
     <el-dialog v-model="showBatchSettings" :title="$t('common.batchSettings')" width="500px" :close-on-click-modal="false" class="batch-dialog">
       <div class="batch-form">
         <div class="form-item"><label>{{ $t('common.resolution') }}</label>
@@ -112,7 +114,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import { useFileStore } from '@/stores/fileStore'
 import { storeToRefs } from 'pinia'
 import { useAuthCheck } from '@/composables/useAuthCheck'
@@ -129,6 +131,14 @@ import { platformService } from '@/services/platformService'
 import { getWebVideoMeta } from '@/utils/webMediaMeta'
 import { useI18n } from 'vue-i18n'
 import { useSelectableFiles } from '@/composables/useSelectableFiles'
+import { estimateCompressedSize } from '@/utils/compressionEstimate'
+import {
+  beginConversionRun,
+  finishCancelledConversion,
+  isConversionCancelRequested,
+  isCurrentConversionRun,
+  requestConversionCancel,
+} from '@/utils/conversionCancel'
 import {
   buildOutputName,
   cloneOutputSettings,
@@ -150,6 +160,7 @@ const showQRUpload = ref(false)
 const showURLDialog = ref(false)
 const outputDir = ref('')
 const outputPathType = ref('default')
+const customPathLabel = computed(() => outputDir.value && outputPathType.value === 'custom' ? outputDir.value : t('common.customFolder'))
 const isDragging = ref(false)
 const isProcessingDrop = ref(false)
 
@@ -189,10 +200,15 @@ const {
 
 onMounted(async () => {
   outputDir.value = await platformService.getDefaultOutputDir()
-  platformService.onConvertProgress((data: { id: string; percent: number }) => {
+  platformService.onConvertProgress((data: { id: string; percent: number; outputSize?: number; phasePercent?: number }) => {
     const file = files.value.find(f => f.id === data.id)
     if (file && file.status === 'converting') {
       file.progress = Math.round(data.percent)
+      const outputSize = Number(data.outputSize || 0)
+      if (Number.isFinite(outputSize) && outputSize > 0) {
+        file.actualOutputSize = Math.round(outputSize)
+        updateLiveEstimatedSize(file, outputSize, Number(data.phasePercent || 0))
+      }
     }
   }, 'compress-progress')
 })
@@ -205,9 +221,9 @@ const formatDuration = (seconds: number) => {
 }
 
 // 拖拽事件
-const onDragOver = (e: DragEvent) => { 
+const onDragOver = (e: DragEvent) => {
   e.preventDefault()
-  if (files.value.length) isDragging.value = true 
+  if (files.value.length) isDragging.value = true
 }
 
 const onDragLeave = (e: DragEvent) => {
@@ -222,10 +238,10 @@ const onDrop = async (e: DragEvent) => {
   e.preventDefault()
   e.stopPropagation()
   isDragging.value = false
-  
+
   // 如果文件列表为空，让 FileDropZone 处理
   if (!files.value.length) return
-  
+
   try {
     const mediaFiles = await handleDragDropEvent(e, VIDEO_EXTENSIONS)
     if (mediaFiles.length) {
@@ -281,6 +297,11 @@ const addFilesToList = async (selectedFiles: any[]) => {
       try { thumbnail = await platformService.getVideoThumbnail(filePath) } catch (e) {}
     }
 
+    const sourceSize = Number(videoInfo.size || 0)
+    const durationSec = Number(videoInfo.duration || 0)
+    const sourceBitrate = Number(videoInfo.bitrate || 0)
+    const settings = cloneOutputSettings(batchSettings.value, defaultCompressSettings)
+
     files.value.push({
       id: fileId, name: fileName, path: filePath,
       format: platformService.extname(fileName).slice(1),
@@ -289,10 +310,19 @@ const addFilesToList = async (selectedFiles: any[]) => {
       resolution: videoInfo.width && videoInfo.height ? `${videoInfo.width}x${videoInfo.height}` : '',
       outputResolution: outputResolutionFromSettings(batchSettings.value, videoInfo.width && videoInfo.height ? `${videoInfo.width}x${videoInfo.height}` : ''),
       duration: videoInfo.duration ? formatDuration(videoInfo.duration) : '00:00',
-      size: videoInfo.size, estimatedSize: videoInfo.size ? Math.round(videoInfo.size * 0.7) : 0,
+      durationSec,
+      size: sourceSize,
+      estimatedSize: estimateCompressedSize({
+        sourceSize,
+        durationSeconds: durationSec,
+        sourceBitrate,
+        mode: compressMode.value,
+        settings,
+      }),
+      sourceBitrate,
       bitrate: videoInfo.bitrate ? `${Math.round(videoInfo.bitrate / 1000)}kbps` : '',
       thumbnail, status: 'pending', progress: 0,
-      settings: cloneOutputSettings(batchSettings.value, defaultCompressSettings),
+      settings,
       hasCustomOutputSettings: false,
     })
   }
@@ -302,6 +332,15 @@ const handleFilesSelected = addFilesToList
 
 const clearFiles = () => { files.value = []; clearSelection() }
 const deleteFile = (file: any) => { files.value = files.value.filter(f => f.id !== file.id); removeSelection(file) }
+const cancelFile = async (file: any) => {
+  if (file.status !== 'converting') return
+  requestConversionCancel(file, { clearActualOutputSize: true })
+  try {
+    await platformService.cancelConvert(file.id)
+  } catch (error) {
+    console.error('取消压缩失败:', error)
+  }
+}
 const openSettings = (file?: any) => {
   currentEditingFile.value = file || null
   initialSettingsForDialog.value = file ? cloneOutputSettings(file.settings || batchSettings.value, defaultCompressSettings) : cloneOutputSettings(batchSettings.value, defaultCompressSettings)
@@ -330,12 +369,51 @@ const normalizeCompressSettings = (settings: any) => ({
   audioBitrate: settings?.audioBitrate || 'auto',
 })
 
+const updateEstimatedSize = (file: any) => {
+  file.estimatedSize = estimateCompressedSize({
+    sourceSize: Number(file.size || 0),
+    durationSeconds: Number(file.durationSec || 0),
+    sourceBitrate: Number(file.sourceBitrate || 0),
+    mode: compressMode.value,
+    settings: file.settings || batchSettings.value,
+  })
+  file.initialEstimatedSize = file.estimatedSize
+}
+
+const updateLiveEstimatedSize = (file: any, outputSize: number, phasePercent: number) => {
+  const phaseRatio = Math.min(1, Math.max(0, phasePercent / 100))
+  if (!Number.isFinite(outputSize) || outputSize <= 0 || phaseRatio < 0.08) return
+
+  const projectedSize = Math.round(outputSize / phaseRatio)
+  if (!Number.isFinite(projectedSize) || projectedSize <= 0) return
+
+  const previousEstimate = Number(file.estimatedSize || file.initialEstimatedSize || projectedSize)
+  const sourceSize = Number(file.size || 0)
+  const cappedProjection = sourceSize > 0 ? Math.min(projectedSize, Math.round(sourceSize * 0.98)) : projectedSize
+  file.estimatedSize = Math.max(1, Math.round(previousEstimate * 0.8 + cappedProjection * 0.2))
+}
+
+const updateAllEstimatedSizes = () => {
+  files.value.forEach(updateEstimatedSize)
+}
+
+watch(compressMode, updateAllEstimatedSizes)
+
+const applyCompressionResult = (file: any, result: any) => {
+  const outputSize = Number(result?.outputSize || 0)
+  if (Number.isFinite(outputSize) && outputSize > 0) {
+    file.actualOutputSize = Math.round(outputSize)
+  }
+}
+
 const applyCompressOutputSettings = (file: any, format: string, settings: any, customized: boolean) => {
   const nextFormat = format.toLowerCase()
   file.outputFormat = nextFormat
   file.outputName = buildOutputName(file.name, '_compress', nextFormat)
   file.settings = cloneOutputSettings(settings, defaultCompressSettings)
   file.outputResolution = outputResolutionFromSettings(file.settings, file.resolution)
+  delete file.actualOutputSize
+  updateEstimatedSize(file)
   markFileOutputCustomized(file, customized)
   resetFileOutputStatus(file)
 }
@@ -375,24 +453,45 @@ const getOutputPath = (file: any) => {
   return outputPathType.value === 'source' ? platformService.join(platformService.dirname(file.path), file.outputName) : platformService.join(outputDir.value, file.outputName)
 }
 
+const runCompressionForFile = async (file: any) => {
+  if (file.status === 'converting') return false
+  updateEstimatedSize(file)
+  const runId = beginConversionRun(file, { clearActualOutputSize: true })
+  try {
+    const settings = cloneOutputSettings(file.settings || batchSettings.value, defaultCompressSettings)
+    const result = await platformService.convertVideo({
+      id: file.id, inputPath: file.path, outputPath: getOutputPath(file), mode: compressMode.value,
+      format: file.outputFormat || 'mp4',
+      resolution: settings.resolution, width: settings.width, height: settings.height,
+      videoCodec: settings.videoCodec, audioCodec: settings.audioCodec,
+      videoBitrate: settings.videoBitrate,
+      frameRate: settings.frameRate, audioBitrate: settings.audioBitrate,
+      sampleRate: settings.sampleRate, channels: settings.channels,
+      type: 'compress-video'
+    })
+    if (!isCurrentConversionRun(file, runId)) return false
+    if (isConversionCancelRequested(file, runId)) {
+      finishCancelledConversion(file, { clearActualOutputSize: true })
+      return false
+    }
+    applyCompressionResult(file, result)
+    file.status = 'completed'; file.progress = 100
+    return true
+  } catch (err) {
+    if (!isCurrentConversionRun(file, runId)) return false
+    if (isConversionCancelRequested(file, runId)) {
+      finishCancelledConversion(file, { clearActualOutputSize: true })
+      return false
+    }
+    file.status = 'error'
+    console.error('压缩失败:', err)
+    return false
+  }
+}
+
 const compressFile = async (file: any, showDialog = true) => {
   await checkAuthAndExecute(async () => {
-    if (file.status === 'converting') return
-    file.status = 'converting'; file.progress = 0
-    try {
-      const settings = cloneOutputSettings(file.settings || batchSettings.value, defaultCompressSettings)
-      await platformService.convertVideo({
-        id: file.id, inputPath: file.path, outputPath: getOutputPath(file), mode: compressMode.value,
-        format: file.outputFormat || 'mp4',
-        resolution: settings.resolution, width: settings.width, height: settings.height,
-        videoCodec: settings.videoCodec, audioCodec: settings.audioCodec,
-        videoBitrate: settings.videoBitrate,
-        frameRate: settings.frameRate, audioBitrate: settings.audioBitrate,
-        sampleRate: settings.sampleRate, channels: settings.channels,
-        type: 'compress-video'
-      })
-      file.status = 'completed'; file.progress = 100
-    } catch (err) { file.status = 'error'; console.error('压缩失败:', err) }
+    await runCompressionForFile(file)
   })
 }
 
@@ -401,27 +500,8 @@ const compressAll = async () => {
   await checkAuthAndExecute(async () => {
     const pendingFiles = [...selectedReadyFiles.value]
     let completedCount = 0
-    for (const file of pendingFiles) { 
-      if (file.status === 'converting') continue
-      file.status = 'converting'; file.progress = 0
-      try {
-        const settings = cloneOutputSettings(file.settings || batchSettings.value, defaultCompressSettings)
-        await platformService.convertVideo({
-          id: file.id, inputPath: file.path, outputPath: getOutputPath(file), mode: compressMode.value,
-          format: file.outputFormat || 'mp4',
-          resolution: settings.resolution, width: settings.width, height: settings.height,
-          videoCodec: settings.videoCodec, audioCodec: settings.audioCodec,
-          videoBitrate: settings.videoBitrate,
-          frameRate: settings.frameRate, audioBitrate: settings.audioBitrate,
-          sampleRate: settings.sampleRate, channels: settings.channels,
-          type: 'compress-video'
-        })
-        file.status = 'completed'; file.progress = 100
-        completedCount++
-      } catch (err) { 
-        file.status = 'error'; 
-        console.error('压缩失败:', err) 
-      }
+    for (const file of pendingFiles) {
+      if (await runCompressionForFile(file)) completedCount++
     }
     clearSelection()
   })

@@ -50,7 +50,6 @@ const videoFormats = [
   'webm',
   '3gp',
   'f4v',
-  'swf',
   'ogv',
   'asf',
   'vob',
@@ -81,7 +80,6 @@ const expectedVideoCodec: Record<string, string> = {
 
 const expectedVideoContainer: Partial<Record<string, string>> = {
   ogv: 'ogg',
-  swf: 'swf',
   webm: 'webm',
   wtv: 'wtv',
 }
@@ -273,14 +271,14 @@ const appendScaleToComplexOutput = (filters: string[], outputSize: string) => {
   if (!/\[out\]\s*$/.test(scaledFilters[lastIndex])) return filters
 
   scaledFilters[lastIndex] = scaledFilters[lastIndex].replace(/\[out\]\s*$/, '[preout]')
-  scaledFilters.push(`[preout]scale=${size[1]}:${size[2]}[out]`)
+  scaledFilters.push(`[preout]${scaleFilterFromOutputSize(`${size[1]}x${size[2]}`)}[out]`)
 
   return scaledFilters
 }
 
 const scaleFilterFromOutputSize = (outputSize: string) => {
   const size = outputSize.match(/^(\d+)x(\d+)$/)
-  return size ? `scale=${size[1]}:${size[2]}` : ''
+  return size ? `scale=${size[1]}:${size[2]}:force_original_aspect_ratio=decrease,pad=${size[1]}:${size[2]}:(ow-iw)/2:(oh-ih)/2,setsar=1` : ''
 }
 
 const compressionOptionsForPlan = (plan: VideoConversionPlan, modeKey = 'speed') => {
@@ -608,7 +606,6 @@ describe('module fidelity workflows', () => {
       await assertPlayableVideoOutput(format, outputPath, plan, {
         height: testOutputHeight,
         minDuration: 0.8,
-        requireDuration: format !== 'swf',
         width: testOutputWidth,
       })
       expect(await fileSize(outputPath), `${format} should be smaller than source after compression`).toBeLessThan(await fileSize(sourceA))
@@ -675,7 +672,6 @@ describe('module fidelity workflows', () => {
 
       await assertPlayableVideoOutput(format, outputPath, plan, {
         minDuration: 2.4,
-        requireDuration: format !== 'swf',
       })
     }
   }, timeoutMs)
@@ -722,7 +718,6 @@ describe('module fidelity workflows', () => {
       await assertPlayableVideoOutput(format, outputPath, plan, {
         height: testOutputHeight,
         minDuration: 0.8,
-        requireDuration: format !== 'swf',
         width: testOutputWidth,
       })
     }
@@ -736,7 +731,6 @@ describe('module fidelity workflows', () => {
       await assertPlayableVideoOutput(format, outputPath, plan, {
         height: testOutputHeight,
         minDuration: 0.8,
-        requireDuration: format !== 'swf',
         width: testOutputWidth,
       })
     }
@@ -750,7 +744,6 @@ describe('module fidelity workflows', () => {
       await assertPlayableVideoOutput(format, outputPath, plan, {
         height: testOutputHeight,
         minDuration: 0.8,
-        requireDuration: format !== 'swf',
         width: testOutputWidth,
       })
     }

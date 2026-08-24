@@ -15,7 +15,7 @@
     "build:web": "vite build --mode web && node scripts/generate-seo-files.mjs",
     "build:server": "tsc -p tsconfig.server.json",
     "build:prod": "npm run build:web && npm run build:server",
-    "server": "ts-node server/index.ts",
+    "server": "ts-node --project tsconfig.server.json server/index.ts",
     "start": "node dist-server/server/index.js",
     "preview": "vite preview",
     "test": "vitest",

@@ -10,6 +10,7 @@ import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import ffprobeInstaller from '@ffprobe-installer/ffprobe';
 import { v4 as uuidv4 } from 'uuid';
 import { createAudioConversionPlan, isAudioOutputFormat } from '../electron/audioConversionProfiles';
+import { assertSupportedVideoOutputFormat } from '../electron/videoConversionProfiles';
 
 // 优先使用系统安装的 ffmpeg，如果找不到再使用 installer 提供的路径
 const getFFmpegPath = () => {
@@ -299,6 +300,15 @@ app.post('/api/convert', async (req: Request, res: Response) => {
       : `${id}.${resolvedFormat}`;
   const outputFilename = rawOutputName || `${id}.${resolvedFormat}`;
   const outputFilePath = path.join(outputDir, outputFilename);
+
+  if (!isAudioOutputFormat(resolvedFormat)) {
+    try {
+      assertSupportedVideoOutputFormat(resolvedFormat);
+      assertSupportedVideoOutputFormat(path.extname(outputFilename).slice(1));
+    } catch (error) {
+      return res.status(400).json({ error: (error as Error).message });
+    }
+  }
 
   if (fs.existsSync(outputFilePath)) {
     fs.unlinkSync(outputFilePath);

@@ -3,6 +3,7 @@
  */
 import i18n from '@/i18n'
 import { platformService } from '@/services/platformService'
+import { VIDEO_INPUT_EXTENSIONS } from '@/utils/mediaFormats'
 
 const { t } = i18n.global as any
 
@@ -57,7 +58,7 @@ export async function handleDragDropEvent(e: DragEvent, extensions: string[]): P
 /**
  * 视频文件扩展名
  */
-export const VIDEO_EXTENSIONS = ['mp4', 'avi', 'wmv', 'flv', 'mkv', 'mov', 'webm', '3gp', 'ts', 'm2ts', 'mts', 'm2t', 'm4v', 'f4v', 'swf', 'ogv', 'asf', 'vob', 'mpg', 'mpeg', 'wtv']
+export const VIDEO_EXTENSIONS = [...VIDEO_INPUT_EXTENSIONS]
 
 /**
  * 音频文件扩展名

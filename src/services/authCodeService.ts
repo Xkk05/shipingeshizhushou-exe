@@ -5,6 +5,16 @@ const SOFT_NUMBER = '10005'
 
 const { t } = i18n.global as any
 
+export class AuthNetworkError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'AuthNetworkError'
+  }
+}
+
+export const isAuthNetworkError = (error: unknown): error is AuthNetworkError =>
+  error instanceof AuthNetworkError || (error instanceof Error && error.name === 'AuthNetworkError')
+
 interface CheckAuthCodeResponse {
   code: number
   msg: string
@@ -21,6 +31,27 @@ interface ValidateAuthCodeResponse {
   time: number
   data: {
     auth_code_status: number
+  }
+}
+
+const postAuthRequest = async <T>(pathname: string, body: Record<string, string>): Promise<T> => {
+  try {
+    const response = await fetch(`${API_BASE_URL}${pathname}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams(body).toString(),
+    })
+
+    if (!response.ok) {
+      throw new AuthNetworkError(`授权服务暂时不可用: HTTP ${response.status}`)
+    }
+
+    return await response.json() as T
+  } catch (error) {
+    if (isAuthNetworkError(error)) throw error
+    throw new AuthNetworkError(error instanceof Error ? error.message : String(error))
   }
 }
 
@@ -93,18 +124,10 @@ export async function checkNeedAuthCode(): Promise<{ needAuth: boolean; authUrl?
   const deviceId = await generateDeviceId()
   
   try {
-    const response = await fetch(`${API_BASE_URL}/soft_desktop/check_get_auth_code`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({
-        device_id: deviceId,
-        soft_number: SOFT_NUMBER,
-      }).toString(),
+    const result = await postAuthRequest<CheckAuthCodeResponse>('/soft_desktop/check_get_auth_code', {
+      device_id: deviceId,
+      soft_number: SOFT_NUMBER,
     })
-
-    const result: CheckAuthCodeResponse = await response.json()
     
     if (result.code === 1) {
       // 构建完整的授权码获取URL（与 demo.py 保持一致）
@@ -122,7 +145,7 @@ export async function checkNeedAuthCode(): Promise<{ needAuth: boolean; authUrl?
       throw new Error(result.msg || t('error.checkAuthCodeFailed'))
     }
   } catch (error) {
-    console.error(t('error.checkAuthCodeFailed') + ':', error)
+    console.warn(t('error.checkAuthCodeFailed') + ':', error)
     throw error
   }
 }
@@ -134,19 +157,11 @@ export async function validateAuthCode(authCode: string): Promise<boolean> {
   const deviceId = await generateDeviceId()
   
   try {
-    const response = await fetch(`${API_BASE_URL}/soft_desktop/check_auth_code_valid`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({
-        device_id: deviceId,
-        soft_number: SOFT_NUMBER,
-        auth_code: authCode,
-      }).toString(),
+    const result = await postAuthRequest<ValidateAuthCodeResponse>('/soft_desktop/check_auth_code_valid', {
+      device_id: deviceId,
+      soft_number: SOFT_NUMBER,
+      auth_code: authCode,
     })
-
-    const result: ValidateAuthCodeResponse = await response.json()
     
     if (result.code === 1) {
       return result.data.auth_code_status === 1
@@ -154,7 +169,7 @@ export async function validateAuthCode(authCode: string): Promise<boolean> {
       throw new Error(result.msg || t('error.validateAuthCodeFailed'))
     }
   } catch (error) {
-    console.error(t('error.validateAuthCodeFailed') + ':', error)
+    console.warn(t('error.validateAuthCodeFailed') + ':', error)
     throw error
   }
 }
@@ -203,10 +218,16 @@ export async function checkLocalAuthCodeValid(): Promise<boolean> {
   if (!localAuthCode) return false
   
   try {
-    return await validateAuthCode(localAuthCode)
+    const isValid = await validateAuthCode(localAuthCode)
+    if (!isValid) clearLocalAuthCode()
+    return isValid
   } catch (error) {
-    console.error('检查本地授权码有效性失败:', error)
-    // 如果检查失败，清除本地授权码
+    if (isAuthNetworkError(error)) {
+      console.warn('授权服务暂时不可用，保留本地授权码:', error)
+      return true
+    }
+
+    console.warn('检查本地授权码有效性失败:', error)
     clearLocalAuthCode()
     return false
   }

@@ -22,20 +22,21 @@
         <el-select v-model="outputPathType" class="path-select" @change="handlePathTypeChange">
           <el-option :label="t('common.videoConverterFolder')" value="default" />
           <el-option :label="t('common.sameAsSource')" value="source" />
-          <el-option :label="t('common.customFolder')" value="custom" />
+          <el-option :label="customPathLabel" value="custom" />
         </el-select>
         <el-button class="folder-btn" @click="selectOutputDir">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="#36d1c4">
             <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
           </svg>
         </el-button>
+        <span v-if="outputPathType === 'custom' && customPath" class="selected-path" :title="customPath">{{ customPath }}</span>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted } from 'vue'
+import { computed, ref, watch, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 const { t } = useI18n()
 
@@ -53,6 +54,7 @@ const outputPathType = ref('default')
 const customPath = ref('')
 const defaultPath = ref('')
 const outputFormat = ref('mp4')
+const customPathLabel = computed(() => customPath.value || t('common.customFolder'))
 
 // 监听外部格式变化
 watch(() => props.currentFormat, (newFormat) => {
@@ -195,6 +197,16 @@ watch(outputPathType, (type) => {
         &:hover {
           background: #e8f8f6;
         }
+      }
+
+      .selected-path {
+        min-width: 0;
+        max-width: 360px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: #4b5563;
+        font-size: 13px;
       }
     }
   }

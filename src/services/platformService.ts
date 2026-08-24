@@ -1,6 +1,8 @@
 import axios from 'axios';
 import { resolveElectronConversionChannel } from '@/services/conversionRouting';
 import { toIpcPayload } from '@/utils/ipcPayload';
+import { extensionFromFileName } from '@/utils/mediaFormats';
+import { clampProgress } from '@/utils/progress';
 
 export interface PlatformService {
   isElectron: boolean;
@@ -12,6 +14,7 @@ export interface PlatformService {
   getVideoThumbnail(filePath: string): Promise<string>;
   playVideo(filePath: string): Promise<void>;
   convertVideo(options: any): Promise<any>;
+  cancelConvert(id: string): Promise<boolean>;
   removeWatermark(options: any): Promise<void>;
   addWatermark(options: any): Promise<void>;
   onConvertProgress(callback: (data: { id: string; percent: number }) => void, channel?: string): void;
@@ -95,9 +98,10 @@ class ElectronPlatformService implements PlatformService {
     const channel = resolveElectronConversionChannel(options);
     return await this.ipcRenderer.invoke(channel, toIpcPayload(options));
   }
+  async cancelConvert(id: string): Promise<boolean> { return await this.ipcRenderer.invoke('cancel-convert', id); }
   async removeWatermark(options: any): Promise<void> { return await this.ipcRenderer.invoke('remove-watermark', toIpcPayload(options)); }
   async addWatermark(options: any): Promise<void> { return await this.ipcRenderer.invoke('add-watermark', toIpcPayload(options)); }
-  onConvertProgress(callback: (data: { id: string; percent: number }) => void, channel = 'convert-progress'): void { this.ipcRenderer.on(channel, (_: any, data: any) => callback(data)); }
+  onConvertProgress(callback: (data: { id: string; percent: number }) => void, channel = 'convert-progress'): void { this.ipcRenderer.on(channel, (_: any, data: any) => callback({ ...data, percent: clampProgress(data?.percent) })); }
   removeConvertProgressListeners(channel = 'convert-progress'): void { this.ipcRenderer.removeAllListeners(channel); }
   async getDefaultOutputDir(): Promise<string> { return await this.ipcRenderer.invoke('get-default-output-dir'); }
   minimizeWindow(): void { this.ipcRenderer.send('window-minimize'); }
@@ -118,7 +122,7 @@ class ElectronPlatformService implements PlatformService {
   onFilesUploaded(callback: (filePaths: string[]) => void): void { this.ipcRenderer.on('files-uploaded', (_: any, filePaths: string[]) => callback(filePaths)); }
   removeFilesUploadedListeners(): void { this.ipcRenderer.removeAllListeners('files-uploaded'); }
   async downloadVideoUrl(options: any): Promise<any> { return await this.ipcRenderer.invoke('download-video-url', options); }
-  onUrlDownloadProgress(callback: (data: any) => void, channel = 'url-download-progress'): void { this.ipcRenderer.on(channel, (_: any, data: any) => callback(data)); }
+  onUrlDownloadProgress(callback: (data: any) => void, channel = 'url-download-progress'): void { this.ipcRenderer.on(channel, (_: any, data: any) => callback({ ...data, percent: clampProgress(data?.percent) })); }
   removeUrlDownloadProgressListeners(channel = 'url-download-progress'): void { this.ipcRenderer.removeAllListeners(channel); }
   async openExternalUrl(url: string): Promise<void> { await this.ipcRenderer.invoke('open-external-url', url); }
 }
@@ -169,6 +173,8 @@ class WebPlatformService implements PlatformService {
         const files = Array.from(target.files || []);
         const results: any[] = [];
         for (const file of files) {
+          const ext = extensionFromFileName(file.name);
+          if (extensions.length > 0 && !extensions.includes(ext)) continue;
           const formData = new FormData();
           formData.append('video', file);
           try {
@@ -197,6 +203,8 @@ class WebPlatformService implements PlatformService {
     return task;
   }
 
+  async cancelConvert(): Promise<boolean> { return false; }
+
   async removeWatermark(options: any): Promise<void> {
     const response = await axios.post(buildApiUrl('/api/remove-watermark'), options);
     const task = await this.waitForTask(response.data.id || options.id);
@@ -215,7 +223,7 @@ class WebPlatformService implements PlatformService {
       try {
         const response = await axios.get(buildApiUrl('/api/progress'));
         const progresses = response.data;
-        for (const id in progresses) callback({ id, percent: progresses[id] });
+        for (const id in progresses) callback({ id, percent: clampProgress(progresses[id]) });
       } catch (error) {
         console.error('Failed to fetch progress:', error);
       }

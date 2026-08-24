@@ -269,7 +269,6 @@ describe('real media conversion workflows', () => {
       webm: { video: 'vp9', audio: 'opus' },
       '3gp': { video: 'h264', audio: 'aac' },
       f4v: { video: 'h264', audio: 'aac' },
-      swf: { video: 'flv1', audio: 'mp3' },
       ogv: { video: 'vp8', audio: 'vorbis' },
       vob: { video: 'mpeg2video', audio: 'mp2' },
       mpg: { video: 'mpeg2video', audio: 'mp2' },
@@ -294,12 +293,10 @@ describe('real media conversion workflows', () => {
     }
   }, timeoutMs)
 
-  it('exports user-reported OGV and SWF cases with visible video streams', async () => {
+  it('exports the user-reported OGV case and rejects SWF as an output format', async () => {
     const ogvOutputPath = path.join(tempDir, 'reported-case.ogv')
-    const swfOutputPath = path.join(tempDir, 'reported-case.swf')
 
     await runVideoConversionPlan(userLikeVerticalVideo, ogvOutputPath, createVideoConversionPlan('ogv', reportedOgvSwfSettings))
-    await runVideoConversionPlan(userLikeVerticalVideo, swfOutputPath, createVideoConversionPlan('swf', reportedOgvSwfSettings))
 
     const ogvMetadata = await probe(ogvOutputPath)
     const ogvPlan = createVideoConversionPlan('ogv', reportedOgvSwfSettings)
@@ -313,12 +310,7 @@ describe('real media conversion workflows', () => {
     expect(duration(ogvMetadata)).toBeGreaterThan(11)
     await expectDecodesWithoutErrors(ogvOutputPath)
 
-    const swfMetadata = await probe(swfOutputPath)
-    expect(swfMetadata.format?.format_name).toContain('swf')
-    expect(videoStream(swfMetadata)?.codec_name).toBe('flv1')
-    expect(audioStream(swfMetadata)?.codec_name).toBe('mp3')
-    expect(videoStream(swfMetadata)?.width).toBe(1600)
-    expect(videoStream(swfMetadata)?.height).toBe(500)
+    expect(() => createVideoConversionPlan('swf', reportedOgvSwfSettings)).toThrow(/SWF 输出格式/)
   }, timeoutMs)
 
   it('compresses video to a smaller, downsized MP4', async () => {

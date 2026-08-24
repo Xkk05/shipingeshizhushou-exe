@@ -8,6 +8,12 @@ export const useFileStore = defineStore('files', () => {
   
   // 视频合并
   const videoMergeFiles = ref<any[]>([])
+  const videoMergeState = ref({
+    taskId: '',
+    merging: false,
+    progress: 0,
+    status: '',
+  })
   
   // 视频压缩
   const videoCompressFiles = ref<any[]>([])
@@ -27,6 +33,7 @@ export const useFileStore = defineStore('files', () => {
   return {
     videoConvertFiles,
     videoMergeFiles,
+    videoMergeState,
     videoCompressFiles,
     audioConvertFiles,
     videoExtractAudioFiles,

@@ -36,11 +36,21 @@ type StrictProfile = {
   outputOptions?: string[]
 }
 
+export const unsupportedVideoOutputFormats = ['swf'] as const
+
+export const isUnsupportedVideoOutputFormat = (format?: string) =>
+  unsupportedVideoOutputFormats.includes(String(format || '').trim().toLowerCase() as any)
+
+export const assertSupportedVideoOutputFormat = (format?: string) => {
+  if (isUnsupportedVideoOutputFormat(format)) {
+    throw new Error('SWF 输出格式无法在现代播放器中稳定播放，请选择 MP4、FLV、MKV 等视频格式。')
+  }
+}
+
 const muxerMap: Record<string, string> = {
   wmv: 'asf',
   asf: 'asf',
   f4v: 'f4v',
-  swf: 'swf',
   ogv: 'ogg',
   mpg: 'mpeg',
   ts: 'mpegts',
@@ -70,7 +80,6 @@ const strictProfiles: Record<string, StrictProfile> = {
   asf: { muxer: 'asf', videoCodec: 'wmv2', audioCodec: 'wmav2', maxFrameRate: 30 },
   flv: { muxer: 'flv', videoCodec: 'libx264', audioCodec: 'aac', sampleRate: 44100, audioChannels: 2, maxFrameRate: 30, outputOptions: [...yuv420p, '-flvflags', 'add_keyframe_index'] },
   f4v: { muxer: 'f4v', videoCodec: 'libx264', audioCodec: 'aac', sampleRate: 44100, audioChannels: 2, maxFrameRate: 30, outputOptions: yuv420p },
-  swf: { muxer: 'swf', videoCodec: 'flv', audioCodec: 'libmp3lame', sampleRate: 44100, audioChannels: 2, maxFrameRate: 30, maxVideoBitrate: 1200, maxAudioBitrate: 128, outputOptions: yuv420p },
   mp4: { muxer: 'mp4', videoCodec: 'libx264', audioCodec: 'aac', outputOptions: [...yuv420p, '-movflags', '+faststart'] },
   m4v: { muxer: 'mp4', videoCodec: 'libx264', audioCodec: 'aac', outputOptions: [...yuv420p, '-movflags', '+faststart'] },
   mkv: { muxer: 'matroska', videoCodec: 'libx264', audioCodec: 'aac', outputOptions: yuv420p },
@@ -155,6 +164,7 @@ const selectedFrameRate = (frameRate?: string, maxFrameRate?: number) => {
 
 export const createVideoConversionPlan = (format: string, settings: VideoConversionSettings = {}): VideoConversionPlan => {
   const normalized = format.toLowerCase()
+  assertSupportedVideoOutputFormat(normalized)
   const profile = strictProfiles[normalized]
   const muxer = profile?.muxer || outputFormatFromExtension(normalized)
 
